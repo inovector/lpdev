@@ -212,7 +212,7 @@ MIT
 
 ## Author
 
-Your Name
+Dima Botezatu - [dimabotezatu.com](https://dimabotezatu.com)
 
 ## Support
 
