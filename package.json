@@ -1,0 +1,51 @@
+{
+  "name": "lpdev",
+  "version": "1.0.0",
+  "description": "Laravel Package Development CLI - Manage Laravel package development workflows with ease",
+  "main": "index.js",
+  "bin": {
+    "lpdev": "./bin/lpdev"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "bash -n bin/lpdev && bash -n completions/lpdev-completion.bash"
+  },
+  "keywords": [
+    "laravel",
+    "package",
+    "development",
+    "cli",
+    "workflow",
+    "symlink",
+    "composer"
+  ],
+  "author": {
+    "name": "Dima Botezatu",
+    "email": "dima@inovector.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/inovector/lpdev.git"
+  },
+  "bugs": {
+    "url": "https://github.com/inovector/lpdev/issues"
+  },
+  "homepage": "https://github.com/inovector/lpdev#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "bin/",
+    "completions/",
+    "scripts/",
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "preferGlobal": true
+}

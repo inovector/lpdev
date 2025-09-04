@@ -1,0 +1,11 @@
+.git/
+.gitignore
+.DS_Store
+*.log
+node_modules/
+test/
+tests/
+coverage/
+.github/
+.vscode/
+CLAUDE.md
