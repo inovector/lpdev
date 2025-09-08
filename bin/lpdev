@@ -1,16 +1,12 @@
 #!/bin/bash
 
-# Laravel Package Development CLI Tool
-# Installation:
-# 1. Save this file as 'lpdev' (or any name you prefer)
-# 2. chmod +x lpdev
-# 3. Move to PATH: sudo mv lpdev /usr/local/bin/
-# 4. Run from anywhere: lpdev
-
 # Configuration file location
 CONFIG_DIR="$HOME/.lpdev"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 CURRENT_PROJECT_FILE="$CONFIG_DIR/current_project"
+PLUGINS_DIR="$CONFIG_DIR/plugins"
+PLUGINS_ENABLED_DIR="$PLUGINS_DIR/enabled"
+PLUGINS_AVAILABLE_DIR="$PLUGINS_DIR/available"
 
 # Colors
 RED='\033[0;31m'
@@ -29,6 +25,235 @@ init_config() {
         echo "[]" > "$CONFIG_FILE"
         touch "$CURRENT_PROJECT_FILE"
     fi
+    
+    # Initialize plugin directories
+    mkdir -p "$PLUGINS_ENABLED_DIR" "$PLUGINS_AVAILABLE_DIR"
+}
+
+# Plugin system functions
+load_plugins() {
+    if [ -d "$PLUGINS_ENABLED_DIR" ]; then
+        for plugin in "$PLUGINS_ENABLED_DIR"/*.plugin; do
+            if [ -f "$plugin" ] || [ -L "$plugin" ]; then
+                source "$plugin" 2>/dev/null || print_warning "Failed to load plugin: $(basename "$plugin")"
+            fi
+        done
+    fi
+}
+
+call_plugin_hook() {
+    local hook_name="$1"
+    shift
+    
+    # Call the hook function if it exists
+    if declare -f "$hook_name" > /dev/null; then
+        "$hook_name" "$@"
+    fi
+}
+
+# Plugin management functions
+plugin_list() {
+    print_header "Installed Plugins"
+    
+    echo -e "${BOLD}Available Plugins:${NC}"
+    if [ -d "$PLUGINS_AVAILABLE_DIR" ]; then
+        local has_plugins=false
+        
+        # List file-based plugins
+        for plugin in "$PLUGINS_AVAILABLE_DIR"/*.plugin; do
+            if [ -f "$plugin" ]; then
+                has_plugins=true
+                local plugin_name=$(basename "$plugin" .plugin)
+                local enabled=""
+                
+                if [ -L "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ] || [ -f "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ]; then
+                    enabled=" ${GREEN}[enabled]${NC}"
+                fi
+                
+                echo -e "  - ${plugin_name}${enabled}"
+            fi
+        done
+        
+        # List npm-installed plugins
+        if [ -d "$PLUGINS_AVAILABLE_DIR/node_modules" ]; then
+            for plugin_dir in "$PLUGINS_AVAILABLE_DIR/node_modules"/lpdev-plugin-*; do
+                if [ -d "$plugin_dir" ]; then
+                    has_plugins=true
+                    local plugin_name=$(basename "$plugin_dir" | sed 's/lpdev-plugin-//')
+                    local version=$(grep '"version"' "$plugin_dir/package.json" 2>/dev/null | cut -d'"' -f4)
+                    local enabled=""
+                    
+                    if [ -L "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ] || [ -f "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ]; then
+                        enabled=" ${GREEN}[enabled]${NC}"
+                    fi
+                    
+                    echo -e "  - ${plugin_name} (v${version})${enabled} ${CYAN}[npm]${NC}"
+                fi
+            done
+        fi
+        
+        if [ "$has_plugins" = false ]; then
+            echo "  No plugins installed"
+        fi
+    else
+        echo "  No plugins directory found"
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Install plugins with:${NC} lpdev plugin install <name>"
+    echo -e "${BOLD}Enable plugins with:${NC} lpdev plugin enable <name>"
+}
+
+plugin_install() {
+    local plugin_name="$1"
+    
+    if [ -z "$plugin_name" ]; then
+        print_error "Plugin name required. Usage: lpdev plugin install <name>"
+        return 1
+    fi
+    
+    print_info "Installing plugin: $plugin_name"
+    
+    # Create plugins directory if it doesn't exist
+    mkdir -p "$PLUGINS_AVAILABLE_DIR"
+    
+    # Check if it's an npm package
+    cd "$PLUGINS_AVAILABLE_DIR"
+    
+    # Initialize npm if package.json doesn't exist
+    if [ ! -f "package.json" ]; then
+        npm init -y > /dev/null 2>&1
+    fi
+    
+    # Try to install from npm
+    local npm_package="lpdev-plugin-$plugin_name"
+    
+    print_info "Searching npm for: $npm_package"
+    
+    if npm view "$npm_package" > /dev/null 2>&1; then
+        print_info "Found npm package: $npm_package"
+        npm install "$npm_package"
+        
+        if [ $? -eq 0 ]; then
+            # Create symlink to plugin file
+            if [ -f "node_modules/$npm_package/index.plugin" ]; then
+                ln -sf "node_modules/$npm_package/index.plugin" "$plugin_name.plugin"
+                print_success "Plugin '$plugin_name' installed successfully!"
+                print_info "Enable it with: lpdev plugin enable $plugin_name"
+            else
+                print_error "Plugin installed but index.plugin not found"
+            fi
+        else
+            print_error "Failed to install plugin from npm"
+        fi
+    else
+        print_error "Plugin '$npm_package' not found on npm"
+        print_info "Try searching with: lpdev plugin search $plugin_name"
+    fi
+}
+
+plugin_uninstall() {
+    local plugin_name="$1"
+    
+    if [ -z "$plugin_name" ]; then
+        print_error "Plugin name required. Usage: lpdev plugin uninstall <name>"
+        return 1
+    fi
+    
+    print_info "Uninstalling plugin: $plugin_name"
+    
+    # Disable plugin first
+    plugin_disable "$plugin_name"
+    
+    # Remove npm package if it exists
+    if [ -d "$PLUGINS_AVAILABLE_DIR/node_modules/lpdev-plugin-$plugin_name" ]; then
+        cd "$PLUGINS_AVAILABLE_DIR"
+        npm uninstall "lpdev-plugin-$plugin_name"
+    fi
+    
+    # Remove symlink
+    if [ -L "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin" ]; then
+        rm "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin"
+    fi
+    
+    print_success "Plugin '$plugin_name' uninstalled"
+}
+
+plugin_enable() {
+    local plugin_name="$1"
+    
+    if [ -z "$plugin_name" ]; then
+        print_error "Plugin name required. Usage: lpdev plugin enable <name>"
+        return 1
+    fi
+    
+    # Check if plugin is available
+    if [ ! -f "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin" ] && [ ! -L "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin" ]; then
+        print_error "Plugin '$plugin_name' not found in available plugins"
+        print_info "Install it first with: lpdev plugin install $plugin_name"
+        return 1
+    fi
+    
+    # Create enabled directory if it doesn't exist
+    mkdir -p "$PLUGINS_ENABLED_DIR"
+    
+    # Create symlink to enable plugin
+    ln -sf "../available/$plugin_name.plugin" "$PLUGINS_ENABLED_DIR/$plugin_name.plugin"
+    
+    print_success "Plugin '$plugin_name' enabled"
+}
+
+plugin_disable() {
+    local plugin_name="$1"
+    
+    if [ -z "$plugin_name" ]; then
+        print_error "Plugin name required. Usage: lpdev plugin disable <name>"
+        return 1
+    fi
+    
+    # Remove symlink from enabled directory
+    if [ -L "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ] || [ -f "$PLUGINS_ENABLED_DIR/$plugin_name.plugin" ]; then
+        rm "$PLUGINS_ENABLED_DIR/$plugin_name.plugin"
+        print_success "Plugin '$plugin_name' disabled"
+    else
+        print_info "Plugin '$plugin_name' was not enabled"
+    fi
+}
+
+plugin_search() {
+    local search_term="$1"
+    
+    if [ -z "$search_term" ]; then
+        print_info "Searching for all lpdev plugins..."
+        npm search "lpdev-plugin"
+    else
+        print_info "Searching for: $search_term"
+        npm search "lpdev-plugin-$search_term"
+    fi
+}
+
+plugin_help() {
+    echo -e "${BOLD}${BLUE}Plugin Management${NC}
+
+${BOLD}USAGE:${NC}
+    lpdev plugin <command> [options]
+
+${BOLD}COMMANDS:${NC}
+    ${GREEN}list${NC}              List installed plugins
+    ${GREEN}install${NC} <name>    Install plugin from npm
+    ${GREEN}uninstall${NC} <name>  Remove installed plugin
+    ${GREEN}enable${NC} <name>     Enable an installed plugin
+    ${GREEN}disable${NC} <name>    Disable a plugin
+    ${GREEN}search${NC} [term]     Search npm for plugins
+    ${GREEN}<name>${NC} <cmd>      Execute plugin command
+
+${BOLD}EXAMPLES:${NC}
+    lpdev plugin list                    # Show all installed plugins
+    lpdev plugin install mixpost         # Install lpdev-plugin-mixpost from npm
+    lpdev plugin enable mixpost          # Enable the mixpost plugin
+    lpdev plugin disable mixpost         # Disable the mixpost plugin
+    lpdev plugin search                  # Search all lpdev plugins on npm
+    lpdev plugin mixpost status          # Run mixpost plugin command"
 }
 
 # Helper functions
@@ -64,6 +289,22 @@ json_tool_available() {
     fi
 }
 
+# Helper function to set environment variable in a file
+set_env_var() {
+    local env_file=$1
+    local env_key=$2
+    local env_value=$3
+    
+    if [ -f "$env_file" ]; then
+        if grep -q "^$env_key=" "$env_file"; then
+            sed -i.bak "s|^$env_key=.*|$env_key=\"$env_value\"|" "$env_file"
+        else
+            echo "$env_key=\"$env_value\"" >> "$env_file"
+        fi
+        rm -f "${env_file}.bak"
+    fi
+}
+
 # Project management functions
 add_project() {
     print_header "Add New Project"
@@ -71,26 +312,77 @@ add_project() {
     echo -n "Project name: "
     read project_name
     
-    echo -n "Laravel app path (absolute or relative): "
-    read app_path
-    app_path=$(realpath "$app_path" 2>/dev/null || echo "$app_path")
+    # Get and validate Laravel app path
+    while true; do
+        echo -n "Laravel app path (absolute or relative): "
+        read app_path_input
+        
+        if [ ! -d "$app_path_input" ]; then
+            print_error "Laravel app path does not exist: $app_path_input"
+            continue
+        fi
+        
+        # Convert to absolute path after validation
+        app_path=$(realpath "$app_path_input" 2>/dev/null || echo "$app_path_input")
+        
+        # Double-check the resolved path exists
+        if [ ! -d "$app_path" ]; then
+            print_error "Resolved Laravel app path does not exist: $app_path"
+            continue
+        fi
+        
+        break
+    done
     
-    echo -n "Package local development path: "
-    read package_path
-    package_path=$(realpath "$package_path" 2>/dev/null || echo "$package_path")
+    # Get and validate package path
+    while true; do
+        echo -n "Package local development path: "
+        read package_path_input
+        
+        if [ ! -d "$package_path_input" ]; then
+            print_error "Package path does not exist: $package_path_input"
+            continue
+        fi
+        
+        # Convert to absolute path after validation
+        package_path=$(realpath "$package_path_input" 2>/dev/null || echo "$package_path_input")
+        
+        # Double-check the resolved path exists
+        if [ ! -d "$package_path" ]; then
+            print_error "Resolved package path does not exist: $package_path"
+            continue
+        fi
+        
+        break
+    done
     
-    echo -n "Package vendor name (e.g., inovector/mixpost-pro-team): "
+    echo -n "Package vendor name (e.g., vendor/your-package-name): "
     read package_vendor
     
-    # Validate paths
-    if [ ! -d "$app_path" ]; then
-        print_error "Laravel app path does not exist!"
-        return 1
+    # Get APP_URL - try to extract from existing .env files or ask user
+    local app_url=""
+    local default_app_url=""
+    
+    # Try to extract from app .env first
+    if [ -f "$app_path/.env" ]; then
+        default_app_url=$(grep "^APP_URL=" "$app_path/.env" | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
     fi
     
-    if [ ! -d "$package_path" ]; then
-        print_error "Package path does not exist!"
-        return 1
+    # If not found in app, try package .env
+    if [ -z "$default_app_url" ] && [ -f "$package_path/.env" ]; then
+        default_app_url=$(grep "^APP_URL=" "$package_path/.env" | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+    fi
+    
+    # Ask user for APP_URL
+    if [ -n "$default_app_url" ]; then
+        echo -n "APP_URL (default: $default_app_url): "
+        read app_url
+        if [ -z "$app_url" ]; then
+            app_url="$default_app_url"
+        fi
+    else
+        echo -n "APP_URL (e.g., http://localhost:8000 or https://myapp.test): "
+        read app_url
     fi
     
     # Add to config using Python (more reliable for JSON manipulation)
@@ -126,6 +418,25 @@ EOF
         if [ ! -s "$CURRENT_PROJECT_FILE" ]; then
             echo "$project_name" > "$CURRENT_PROJECT_FILE"
             print_info "Set as current project"
+        fi
+        
+        # Set APP_URL in both .env files if provided
+        if [ -n "$app_url" ]; then
+            print_info "Setting up environment variables..."
+            
+            
+            # Set APP_URL in app .env
+            set_env_var "$app_path/.env" "APP_URL" "$app_url"
+            print_success "App: APP_URL=$app_url"
+            
+            # Set APP_URL in package .env if it exists
+            if [ -f "$package_path/.env" ]; then
+                set_env_var "$package_path/.env" "APP_URL" "$app_url"
+                print_success "Package: APP_URL=$app_url"
+            fi
+            
+            # Call plugin hook for project creation
+            call_plugin_hook "on_project_add" "$project_name" "$app_url" "$app_path" "$package_path"
         fi
     else
         print_error "Failed to add project"
@@ -262,6 +573,8 @@ EOF
 link_package() {
     eval $(get_current_project) || return 1
     
+    call_plugin_hook "before_link_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
     print_info "Linking package for project: $LPDEV_PROJECT"
     
     cd "$LPDEV_APP_PATH"
@@ -269,10 +582,14 @@ link_package() {
     ln -s "$LPDEV_PACKAGE_PATH" "$LPDEV_PACKAGE_VENDOR_PATH"
     
     print_success "Package linked successfully!"
+    
+    call_plugin_hook "after_link_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 unlink_package() {
     eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_unlink_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     print_info "Unlinking package for project: $LPDEV_PROJECT"
     
@@ -281,13 +598,48 @@ unlink_package() {
     composer install
     
     print_success "Package unlinked and restored from composer"
+    
+    call_plugin_hook "after_unlink_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 switch_branch() {
     eval $(get_current_project) || return 1
     
-    echo -n "Enter branch name (e.g., dev-code_rules): "
-    read branch
+    call_plugin_hook "before_switch_branch" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH" "$1"
+    
+    # Check if branch name was provided as argument
+    local branch="$1"
+    
+    # If no branch provided, try to detect from git
+    if [ -z "$branch" ]; then
+        # Check if package directory is a git repo
+        if [ -d "$LPDEV_PACKAGE_PATH/.git" ]; then
+            cd "$LPDEV_PACKAGE_PATH"
+            local git_branch=$(git branch --show-current 2>/dev/null)
+            
+            if [ -z "$git_branch" ]; then
+                print_error "Could not detect current git branch"
+                echo -n "Enter branch name manually (e.g., dev-your_branch): "
+                read branch
+            else
+                # Add 'dev-' prefix if not already present
+                if [[ "$git_branch" == dev-* ]]; then
+                    branch="$git_branch"
+                else
+                    branch="dev-$git_branch"
+                fi
+                print_info "Detected git branch: $git_branch -> Using: $branch"
+            fi
+        else
+            echo -n "Enter branch name (e.g., dev-your_branch): "
+            read branch
+        fi
+    fi
+    
+    if [ -z "$branch" ]; then
+        print_error "No branch specified"
+        return 1
+    fi
     
     cd "$LPDEV_APP_PATH"
     
@@ -300,95 +652,310 @@ switch_branch() {
     composer update "$LPDEV_PACKAGE_VENDOR"
     
     print_success "Switched to branch: $branch"
+    
+    call_plugin_hook "after_switch_branch" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH" "$branch"
 }
 
 install_deps() {
     eval $(get_current_project) || return 1
-    
+
     print_header "Installing Dependencies for $LPDEV_PROJECT"
+
+    call_plugin_hook "before_install_deps" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     # Install app dependencies
     print_info "Installing app dependencies..."
     cd "$LPDEV_APP_PATH"
+    rm -rf vendor
     composer install
-    npm install
     
     # Install package dependencies
     print_info "Installing package dependencies..."
     cd "$LPDEV_PACKAGE_PATH"
+    rm -rf vendor node_modules
     composer install
     npm install
     
+    call_plugin_hook "after_install_deps" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+
     print_success "All dependencies installed!"
+}
+
+fresh_install() {
+    eval $(get_current_project) || return 1
+    
+    print_header "Fresh Install for $LPDEV_PROJECT"
+
+    call_plugin_hook "before_fresh_install" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    # Step 1: Link package
+    print_info "Step 1/6: Linking package..."
+    link_package
+    
+    # Step 2: Set current branch automatically
+    print_info "Step 2/6: Setting branch from git..."
+    if [ -d "$LPDEV_PACKAGE_PATH/.git" ]; then
+        cd "$LPDEV_PACKAGE_PATH"
+        local git_branch=$(git branch --show-current 2>/dev/null)
+        
+        if [ -n "$git_branch" ]; then
+            # Add 'dev-' prefix if not already present
+            local branch
+            if [[ "$git_branch" == dev-* ]]; then
+                branch="$git_branch"
+            else
+                branch="dev-$git_branch"
+            fi
+            
+            print_info "Using branch: $git_branch -> $branch"
+            
+            cd "$LPDEV_APP_PATH"
+            sed -i.bak "s|\"$LPDEV_PACKAGE_VENDOR\": \".*\"|\"$LPDEV_PACKAGE_VENDOR\": \"$branch\"|" composer.json
+            rm composer.json.bak
+        else
+            print_info "No git branch detected, skipping branch update"
+        fi
+    else
+        print_info "Package is not a git repository, skipping branch update"
+    fi
+    
+    # Step 3: Remove vendor and node_modules from app
+    print_info "Step 3/6: Cleaning app dependencies..."
+    cd "$LPDEV_APP_PATH"
+    [ -d "vendor" ] && rm -rf vendor
+    [ -d "node_modules" ] && rm -rf node_modules
+    
+    # Step 4: Remove vendor and node_modules from package
+    print_info "Step 4/6: Cleaning package dependencies..."
+    cd "$LPDEV_PACKAGE_PATH"
+    [ -d "vendor" ] && rm -rf vendor
+    [ -d "node_modules" ] && rm -rf node_modules
+    
+    # Step 5: Install dependencies
+    print_info "Step 5/6: Installing dependencies..."
+    
+    # Install package dependencies (PHP + JS)
+    print_info "Installing package dependencies (PHP + JS)..."
+    cd "$LPDEV_PACKAGE_PATH"
+    if [ -f "composer.json" ]; then
+        composer install
+    fi
+    if [ -f "package.json" ]; then
+        npm install
+    fi
+    
+    # Install app dependencies (PHP only)
+    print_info "Installing app dependencies (PHP only)..."
+    cd "$LPDEV_APP_PATH"
+    composer install
+    
+    # Step 6: Clear Laravel optimizations
+    print_info "Step 6/6: Clearing Laravel cache..."
+    cd "$LPDEV_APP_PATH"
+    php artisan optimize:clear
+
+    call_plugin_hook "after_fresh_install" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    print_success "Fresh install completed successfully!"
+    print_info "Package linked, dependencies installed, and Laravel cache cleared"
+    
+    # Display APP_URL
+    if [ -f "$LPDEV_APP_PATH/.env" ]; then
+        app_url=$(grep "^APP_URL=" "$LPDEV_APP_PATH/.env" | cut -d'=' -f2- | tr -d '"')
+        if [ -n "$app_url" ]; then
+            echo ""
+            print_info "Application available at: ${GREEN}$app_url${NC}"
+        fi
+    fi
 }
 
 start_dev() {
     eval $(get_current_project) || return 1
     
-    print_header "Starting Development Servers for $LPDEV_PROJECT"
+    # Parse arguments
+    local exclude_services=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --exclude=*)
+                exclude_services="${1#*=}"
+                shift
+                ;;
+            --exclude)
+                exclude_services="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
     
-    # Check if tmux is available
-    if command -v tmux &> /dev/null; then
-        session_name="lpdev-$LPDEV_PROJECT"
-        
-        # Kill existing session if it exists
-        tmux kill-session -t "$session_name" 2>/dev/null
-        
-        # Create new session
-        tmux new-session -d -s "$session_name" -n "servers"
-        
-        # Laravel server (pane 0)
-        tmux send-keys -t "$session_name:servers.0" "cd $LPDEV_APP_PATH && php artisan serve" C-m
-        
-        # Laravel npm dev (pane 1)
-        tmux split-window -h -t "$session_name:servers.0"
-        tmux send-keys -t "$session_name:servers.1" "cd $LPDEV_APP_PATH && npm run dev" C-m
-        
-        # Package npm start (pane 2)
-        tmux split-window -v -t "$session_name:servers.1"
-        tmux send-keys -t "$session_name:servers.2" "cd $LPDEV_PACKAGE_PATH && npm run start" C-m
-        
-        print_success "Development servers started in tmux session: $session_name"
-        print_info "Attach with: tmux attach-session -t $session_name"
-        
-        echo -n "Attach to session now? (Y/n): "
-        read attach
-        if [ "$attach" != "n" ] && [ "$attach" != "N" ]; then
-            tmux attach-session -t "$session_name"
+    cd "$LPDEV_APP_PATH"
+
+    # Check for default exclusions in .env file if no --exclude argument provided
+    if [ -z "$exclude_services" ] && [ -f ".env" ]; then
+        default_exclude=$(grep "^LPDEV_EXCLUDE=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+        if [ -n "$default_exclude" ]; then
+            exclude_services="$default_exclude"
+            print_info "Using default exclusions from .env: $exclude_services"
         fi
-    else
-        # Fallback to background processes
-        print_warning "tmux not found. Starting servers in background..."
-        
-        cd "$LPDEV_APP_PATH" && php artisan serve &
-        cd "$LPDEV_APP_PATH" && npm run dev &
-        cd "$LPDEV_PACKAGE_PATH" && npm run start &
-        
-        print_success "Servers started in background"
-        print_info "Use 'lpdev stop' to stop all servers"
     fi
+    
+    print_header "Starting Development Environment for $LPDEV_PROJECT"
+    
+    if [ -n "$exclude_services" ]; then
+        print_info "Excluding services: $exclude_services"
+    fi
+
+    call_plugin_hook "before_start_dev" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    # Check if concurrently is available
+    if ! command -v npx &> /dev/null; then
+        print_error "npx is not available. Please install Node.js/npm first."
+        return 1
+    fi
+
+    # Helper function to check if service should be excluded
+    is_excluded() {
+        local service="$1"
+        echo ",$exclude_services," | grep -q ",$service,"
+    }
+    
+    # Check if pail is available (Laravel 11+)
+    has_pail=false
+    if php artisan list | grep -q "pail"; then
+        has_pail=true
+        print_info "Laravel Pail detected - will include log tailing"
+    else
+        print_warning "Laravel Pail not available"
+    fi
+    
+    # Determine queue worker command
+    queue_cmd=""
+    
+    if ! is_excluded "queue"; then
+        # Check if Horizon is available
+        if php artisan list | grep -q "horizon:work\|horizon$"; then
+            # Use standard horizon for concurrently environment
+            queue_cmd="php artisan horizon"
+            
+            # Check if spatie/laravel-horizon-watcher is installed for future manual use
+            if ! composer show spatie/laravel-horizon-watcher >/dev/null 2>&1; then
+                print_info "Installing spatie/laravel-horizon-watcher for manual horizon:watch usage..."
+                composer require --dev spatie/laravel-horizon-watcher
+                print_info "Laravel Horizon detected - using horizon (use 'lpdev horizon-watch' for file watching)"
+            else
+                print_info "Laravel Horizon detected - using horizon (use 'lpdev horizon-watch' for file watching)"
+            fi
+        else
+            # Fall back to queue:listen with optional custom queue name
+            queue_name=""
+            if [ -f ".env" ]; then
+                # Check if there's a specific queue name configured
+                custom_queue=$(grep "^LPDEV_QUEUE_NAME=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+                if [ -n "$custom_queue" ]; then
+                    queue_name="--queue=$custom_queue"
+                    print_info "Using custom queue: $custom_queue"
+                fi
+            fi
+            queue_cmd="php artisan queue:listen $queue_name --tries=1"
+            print_info "Using standard queue:listen for queue management"
+        fi
+    fi
+    
+    # Build arrays for concurrently
+    local commands=()
+    local colors=()
+    local names=()
+    
+    # Add server if not excluded
+    if ! is_excluded "server"; then
+        commands+=("php artisan serve")
+        colors+=("#93c5fd")
+        names+=("server")
+    fi
+    
+    # Add queue if not excluded
+    if ! is_excluded "queue"; then
+        commands+=("$queue_cmd")
+        colors+=("#c4b5fd")
+        names+=("queue")
+    fi
+    
+    # Add logs (pail) if available and not excluded
+    if [ "$has_pail" = true ] && ! is_excluded "logs"; then
+        commands+=("php artisan pail --timeout=0")
+        colors+=("#fb7185")
+        names+=("logs")
+    fi
+    
+    # Add vite if not excluded
+    if ! is_excluded "vite"; then
+        commands+=("cd $LPDEV_PACKAGE_PATH && npm run dev")
+        colors+=("#fdba74")
+        names+=("vite")
+    fi
+    
+    # Check if we have any commands to run
+    if [ ${#commands[@]} -eq 0 ]; then
+        print_error "All services have been excluded. Nothing to start."
+        return 1
+    fi
+    
+    # Build the color string
+    local color_string=$(IFS=,; echo "${colors[*]}")
+    local names_string=$(IFS=,; echo "${names[*]}")
+    
+    # Show what's starting
+    print_info "Starting: ${names_string//,/, }"
+    
+    # Run concurrently with dynamic commands
+    npx concurrently \
+        -c "$color_string" \
+        "${commands[@]}" \
+        --names="$names_string" \
+        --kill-others
+
+    call_plugin_hook "after_start_dev" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 stop_dev() {
     eval $(get_current_project) || return 1
     
     print_info "Stopping development servers..."
+
+    call_plugin_hook "before_stop_dev" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
-    # Kill tmux session if exists
-    session_name="lpdev-$LPDEV_PROJECT"
-    tmux kill-session -t "$session_name" 2>/dev/null
-    
-    # Kill background processes
+    # Kill all Laravel and npm processes
     pkill -f "artisan serve" 2>/dev/null
+    pkill -f "artisan queue" 2>/dev/null
+    pkill -f "artisan horizon" 2>/dev/null
+    pkill -f "horizon:watch" 2>/dev/null
+    pkill -f "artisan pail" 2>/dev/null
     pkill -f "npm run dev" 2>/dev/null
     pkill -f "npm run start" 2>/dev/null
+    pkill -f "vite" 2>/dev/null
+    
+    # Kill concurrently if it's running
+    pkill -f "concurrently" 2>/dev/null
+    
+    # Additional cleanup for any remaining processes
+    # Kill any remaining PHP built-in server
+    pkill -f "php -S" 2>/dev/null
+    
+    # Kill any webpack or other bundlers
+    pkill -f "webpack" 2>/dev/null
     
     print_success "Development servers stopped"
+
+    call_plugin_hook "after_stop_dev" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 run_artisan() {
     eval $(get_current_project) || return 1
     
+    call_plugin_hook "before_artisan" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH" "$@"
+
     cd "$LPDEV_APP_PATH"
     
     if [ $# -eq 0 ]; then
@@ -398,26 +965,30 @@ run_artisan() {
     else
         php artisan "$@"
     fi
+
+    call_plugin_hook "after_artisan" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH" "$@"
 }
 
 clear_cache() {
     eval $(get_current_project) || return 1
     
     print_info "Clearing caches for $LPDEV_PROJECT..."
+
+    call_plugin_hook "before_clear_cache" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     cd "$LPDEV_APP_PATH"
-    php artisan cache:clear
-    php artisan config:clear
-    php artisan route:clear
-    php artisan view:clear
     php artisan optimize:clear
     composer dump-autoload
     
     print_success "All caches cleared!"
+
+    call_plugin_hook "after_clear_cache" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 publish_assets() {
     eval $(get_current_project) || return 1
+
+    call_plugin_hook "before_publish_assets" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     cd "$LPDEV_APP_PATH"
     
@@ -434,8 +1005,6 @@ publish_assets() {
 env_set() {
     eval $(get_current_project) || return 1
     
-    cd "$LPDEV_APP_PATH"
-    
     if [ $# -lt 2 ]; then
         echo -n "Enter key: "
         read key
@@ -446,18 +1015,18 @@ env_set() {
         value=$2
     fi
     
-    if grep -q "^$key=" .env; then
-        sed -i.bak "s|^$key=.*|$key=$value|" .env
-        print_success "Updated: $key=$value"
-    else
-        echo "$key=$value" >> .env
-        print_success "Added: $key=$value"
-    fi
-    rm -f .env.bak
+    # Set in app .env
+    cd "$LPDEV_APP_PATH"
+    set_env_var ".env" "$key" "$value"
+    print_success "App: $key=$value"
+    
+    call_plugin_hook "on_env_set" "$key" "$value" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 run_tests() {
     eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_run_tests" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     print_header "Running Tests for $LPDEV_PROJECT"
     
@@ -474,22 +1043,301 @@ run_tests() {
     else
         print_warning "No test runner found in package"
     fi
+    
+    call_plugin_hook "after_run_tests" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 build_package() {
     eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_build_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
     print_info "Building package assets..."
     cd "$LPDEV_PACKAGE_PATH"
     npm run build
     
     print_success "Package built!"
+    
+    call_plugin_hook "after_build_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 quick_restart() {
     stop_dev
     clear_cache
     start_dev
+}
+
+horizon_watch() {
+    eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_horizon_watch" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    cd "$LPDEV_APP_PATH"
+    
+    # Check if Horizon is available
+    if ! php artisan list | grep -q "horizon:work\|horizon$"; then
+        print_error "Laravel Horizon is not installed"
+        print_info "Install Horizon: composer require laravel/horizon"
+        return 1
+    fi
+    
+    # Check if spatie/laravel-horizon-watcher is installed
+    if ! composer show spatie/laravel-horizon-watcher >/dev/null 2>&1; then
+        print_info "Installing spatie/laravel-horizon-watcher..."
+        composer require --dev spatie/laravel-horizon-watcher
+    fi
+    
+    # Check if horizon:watch command is available
+    if php artisan list | grep -q "horizon:watch"; then
+        print_info "Starting Laravel Horizon with file watching..."
+        print_info "This will restart Horizon when configuration files change"
+        print_warning "Press Ctrl+C to stop"
+        php artisan horizon:watch
+    else
+        print_error "horizon:watch command not available"
+        print_info "Falling back to standard horizon"
+        php artisan horizon
+    fi
+    
+    call_plugin_hook "after_horizon_watch" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+}
+
+ngrok_share() {
+    eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_ngrok_share" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    # Check if ngrok is available
+    if ! command -v ngrok &> /dev/null; then
+        print_error "ngrok is not installed or not in PATH"
+        print_info "Install ngrok: https://ngrok.com/download"
+        return 1
+    fi
+    
+    print_info "Starting ngrok tunnel for $LPDEV_PROJECT..."
+    
+    # Check if Laravel server is running
+    if ! pgrep -f "artisan serve" > /dev/null; then
+        print_warning "Laravel server not detected. Starting it first..."
+        cd "$LPDEV_APP_PATH"
+        php artisan serve &
+        laravel_pid=$!
+        print_info "Laravel server started with PID: $laravel_pid"
+        sleep 2 # Give server time to start
+    fi
+    
+    # Get the port Laravel is running on (default 8000)
+    laravel_port=8000
+    if pgrep -f "artisan serve" > /dev/null; then
+        # Try to detect the actual port from the process
+        port_line=$(ps aux | grep "artisan serve" | grep -v grep | head -1)
+        if [[ $port_line == *"--port="* ]]; then
+            laravel_port=$(echo "$port_line" | sed 's/.*--port=\([0-9]*\).*/\1/')
+        fi
+    fi
+    
+    print_info "Detected Laravel running on port: $laravel_port"
+    
+    # Create a temporary file to capture ngrok output
+    temp_file=$(mktemp)
+    
+    print_info "Running 'ngrok http $laravel_port' in background..."
+    print_warning "This will start ngrok tunnel and monitor for the public URL..."
+    
+    # Run ngrok in background and capture output
+    ngrok http $laravel_port > "$temp_file" 2>&1 &
+    ngrok_pid=$!
+    
+    print_info "ngrok started with PID: $ngrok_pid"
+    print_info "Monitoring for public URL (will wait up to 10 seconds)..."
+    
+    # Monitor the output file for public URL
+    local count=0
+    local max_attempts=20 # 10 seconds (20 * 0.5 seconds)
+    share_url=""
+    
+    while [ $count -lt $max_attempts ]; do
+        # Check ngrok API for tunnel info (more reliable than parsing output)
+        if command -v curl &> /dev/null; then
+            tunnel_info=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
+            if [ -n "$tunnel_info" ]; then
+                share_url=$(echo "$tunnel_info" | grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok\.io' | head -1)
+                if [ -n "$share_url" ]; then
+                    break
+                fi
+            fi
+        fi
+        
+        # Fallback: try to parse log file
+        if [ -f "$temp_file" ] && [ -z "$share_url" ]; then
+            share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok\.io' "$temp_file" 2>/dev/null | head -1)
+            if [ -n "$share_url" ]; then
+                break
+            fi
+        fi
+        
+        # Check if the process is still running
+        if ! kill -0 $ngrok_pid 2>/dev/null; then
+            print_error "ngrok process died unexpectedly"
+            cat "$temp_file"
+            rm -f "$temp_file"
+            return 1
+        fi
+        
+        sleep 0.5
+        count=$((count + 1))
+        
+        # Show progress dots
+        if [ $((count % 4)) -eq 0 ]; then
+            echo -n "."
+        fi
+    done
+    
+    echo "" # New line after progress dots
+    
+    if [ -n "$share_url" ]; then
+        print_success "ngrok tunnel started successfully!"
+        print_info "Public URL: ${GREEN}$share_url${NC}"
+        print_info "ngrok is running in background (PID: $ngrok_pid)"
+        print_info "Local URL: http://localhost:$laravel_port"
+        
+        # Backup current APP_URL before changing it
+        cd "$LPDEV_APP_PATH"
+        if [ -f ".env" ]; then
+            current_app_url=$(grep "^APP_URL=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+            if [ -n "$current_app_url" ]; then
+                echo "$current_app_url" > "$CONFIG_DIR/ngrok_share_original_url"
+                print_info "Backed up original APP_URL: $current_app_url"
+            fi
+        fi
+        
+        # Update APP_URL in environment
+        print_info "Updating APP_URL to public URL..."
+        
+        # Set APP_URL in app .env
+        set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$share_url"
+        print_success "APP_URL updated to: $share_url"
+        print_info "Your Laravel app is now publicly accessible!"
+        
+        # Save PID and share URL for potential cleanup
+        echo "$ngrok_pid" > "$CONFIG_DIR/ngrok_share_pid"
+        echo "$share_url" > "$CONFIG_DIR/ngrok_share_url"
+        
+        print_info "To stop ngrok later, run: kill $ngrok_pid"
+        print_info "Or use: lpdev share-stop"
+        print_info "View ngrok dashboard: http://localhost:4040"
+        
+        # Call plugin hook for ngrok share
+        call_plugin_hook "on_ngrok_share" "$share_url" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    else
+        print_warning "Could not detect ngrok public URL within 10 seconds"
+        print_info "ngrok may still be starting up. Check the output:"
+        
+        if [ -f "$temp_file" ]; then
+            echo -e "${CYAN}ngrok output:${NC}"
+            cat "$temp_file"
+        fi
+        
+        print_info "ngrok is still running (PID: $ngrok_pid)"
+        print_info "You can monitor it manually or kill it with: kill $ngrok_pid"
+        print_info "Try accessing ngrok dashboard: http://localhost:4040"
+        
+        # Save PID anyway
+        echo "$ngrok_pid" > "$CONFIG_DIR/ngrok_share_pid"
+    fi
+    
+    # Clean up temp file
+    rm -f "$temp_file"
+}
+
+ngrok_share_stop() {
+    eval $(get_current_project) || return 1
+    
+    call_plugin_hook "before_ngrok_share_stop" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+    
+    print_info "Stopping ngrok tunnel for $LPDEV_PROJECT..."
+    
+    # Check if PID file exists
+    pid_file="$CONFIG_DIR/ngrok_share_pid"
+    
+    if [ ! -f "$pid_file" ]; then
+        print_warning "No ngrok PID file found"
+        print_info "Attempting to find and kill ngrok processes..."
+        
+        # Try to kill any ngrok processes
+        if pgrep -f "ngrok http" > /dev/null; then
+            pkill -f "ngrok http"
+            print_success "Killed ngrok processes"
+            
+            # Try to restore original URL if backup exists
+            original_url_file="$CONFIG_DIR/ngrok_share_original_url"
+            if [ -f "$original_url_file" ]; then
+                original_url=$(cat "$original_url_file")
+                if [ -n "$original_url" ]; then
+                    print_info "Restoring original APP_URL: $original_url"
+                    
+                    # Restore APP_URL in app .env
+                    set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$original_url"
+                    print_success "APP_URL restored to: $original_url"
+                    
+                    # Clean up backup files
+                    rm -f "$original_url_file"
+                    rm -f "$CONFIG_DIR/ngrok_share_url"
+                fi
+            fi
+        else
+            print_info "No ngrok processes found"
+        fi
+        return
+    fi
+    
+    ngrok_pid=$(cat "$pid_file")
+    
+    if [ -n "$ngrok_pid" ]; then
+        if kill -0 "$ngrok_pid" 2>/dev/null; then
+            print_info "Stopping ngrok process (PID: $ngrok_pid)..."
+            kill "$ngrok_pid" 2>/dev/null
+            
+            # Wait a moment and check if it's really dead
+            sleep 1
+            if kill -0 "$ngrok_pid" 2>/dev/null; then
+                print_warning "Process still running, forcing kill..."
+                kill -9 "$ngrok_pid" 2>/dev/null
+            fi
+            
+            print_success "ngrok tunnel stopped"
+        else
+            print_info "ngrok process (PID: $ngrok_pid) was already stopped"
+        fi
+        
+        # Remove PID file
+        rm -f "$pid_file"
+        
+        # Restore original APP_URL if we have a backup
+        original_url_file="$CONFIG_DIR/ngrok_share_original_url"
+        if [ -f "$original_url_file" ]; then
+            original_url=$(cat "$original_url_file")
+            if [ -n "$original_url" ]; then
+                print_info "Restoring original APP_URL: $original_url"
+                
+                # Restore APP_URL in app .env
+                set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$original_url"
+                print_success "APP_URL restored to: $original_url"
+                
+                # Clean up backup files
+                rm -f "$original_url_file"
+                rm -f "$CONFIG_DIR/ngrok_share_url"
+            fi
+        else
+            print_warning "No original APP_URL backup found"
+            print_info "You may need to manually restore your APP_URL"
+        fi
+    else
+        print_error "Invalid PID in file"
+        rm -f "$pid_file"
+    fi
+    
+    call_plugin_hook "after_ngrok_share_stop" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 show_status() {
@@ -575,14 +1423,17 @@ ${BOLD}DEVELOPMENT:${NC}
     ${GREEN}unlink${NC}           Restore package from composer
     ${GREEN}branch${NC} <name>    Switch package branch in composer.json
     ${GREEN}install${NC}          Install all dependencies (app + package)
-    ${GREEN}start${NC}            Start all development servers
+    ${GREEN}start${NC}            Start development servers (basic)
+    ${GREEN}dev${NC} [--exclude=services] Start full dev environment (server, queue, logs, vite, package)
+    ${GREEN}horizon-watch${NC}    Start Horizon with file watching (interactive)
     ${GREEN}stop${NC}             Stop all development servers
     ${GREEN}restart${NC}          Quick restart (stop, clear cache, start)
 
 ${BOLD}LARAVEL COMMANDS:${NC}
     ${GREEN}artisan${NC} <cmd>    Run artisan command
     ${GREEN}clear${NC}            Clear all caches
-    ${GREEN}fresh${NC}            Fresh migration with seeders
+    ${GREEN}fresh${NC}            Complete fresh install (link, branch, deps, cache)
+    ${GREEN}fresh-db${NC}         Fresh migration with seeders
     ${GREEN}migrate${NC}          Run migrations
     ${GREEN}tinker${NC}           Start tinker session
     ${GREEN}test${NC}             Run tests
@@ -595,12 +1446,24 @@ ${BOLD}UTILITIES:${NC}
     ${GREEN}env${NC} <key> <val>  Set environment variable
     ${GREEN}app${NC} <cmd>        Execute command in app directory
     ${GREEN}pkg${NC} <cmd>        Execute command in package directory
+    ${GREEN}share${NC}            Share app via ngrok tunnel (updates APP_URL)
+    ${GREEN}share-stop${NC}       Stop ngrok tunnel and restore APP_URL
     ${GREEN}logs${NC}             Tail Laravel logs
+
+${BOLD}PLUGINS:${NC}
+    ${GREEN}plugin list${NC}      List installed plugins  
+    ${GREEN}plugin install${NC}   Install plugin from npm
+    ${GREEN}plugin enable${NC}    Enable an installed plugin
+    ${GREEN}plugin disable${NC}   Disable a plugin
+    ${GREEN}plugin${NC} <name> <cmd> Execute plugin command
 
 ${BOLD}EXAMPLES:${NC}
     lpdev add                     # Add new project interactively
     lpdev switch myproject        # Switch to project
-    lpdev start                   # Start development servers
+    lpdev dev                     # Start full dev environment (respects LPDEV_EXCLUDE in .env)
+    lpdev dev --exclude=queue     # Start without queue worker
+    lpdev dev --exclude=queue,logs # Start without queue and logs
+    lpdev share                   # Share app publicly via ngrok
     lpdev artisan migrate         # Run migrations
     lpdev app npm install axios   # Install npm package in app
     lpdev pkg npm run build       # Build package assets"
@@ -608,6 +1471,7 @@ ${BOLD}EXAMPLES:${NC}
 
 # Main script
 init_config
+load_plugins
 
 # Handle commands
 case "${1:-help}" in
@@ -621,16 +1485,18 @@ case "${1:-help}" in
     # Development
     link) link_package ;;
     unlink) unlink_package ;;
-    branch|br) switch_branch ;;
+    branch|br) switch_branch "$2" ;;
     install|i) install_deps ;;
-    start|up) start_dev ;;
+    dev|up) shift; start_dev "$@" ;;
     stop|down) stop_dev ;;
     restart) quick_restart ;;
+    horizon-watch) horizon_watch ;;
     
     # Laravel commands
     artisan|a) shift; run_artisan "$@" ;;
     clear|cache) clear_cache ;;
-    fresh) run_artisan "migrate:fresh" "--seed" ;;
+    fresh) fresh_install ;;
+    fresh-db) run_artisan "migrate:fresh" "--seed" ;;
     migrate|m) run_artisan "migrate" ;;
     tinker|t) run_artisan "tinker" ;;
     test) run_tests ;;
@@ -643,9 +1509,57 @@ case "${1:-help}" in
     env) shift; env_set "$@" ;;
     app) shift; exec_in_app "$@" ;;
     pkg) shift; exec_in_package "$@" ;;
+    share) ngrok_share ;;
+    share-stop) ngrok_share_stop ;;
     logs|log) 
         eval $(get_current_project) || exit 1
         tail -f "$LPDEV_APP_PATH/storage/logs/laravel.log" 
+        ;;
+    
+    # Plugin commands
+    plugin)
+        shift
+        case "$1" in
+            list)
+                plugin_list
+                ;;
+            install)
+                plugin_install "$2"
+                ;;
+            uninstall|remove)
+                plugin_uninstall "$2"
+                ;;
+            enable)
+                plugin_enable "$2"
+                ;;
+            disable)
+                plugin_disable "$2"
+                ;;
+            search)
+                plugin_search "$2"
+                ;;
+            *)
+                # Execute plugin command
+                plugin_name="$1"
+                shift
+                
+                if [ -z "$plugin_name" ]; then
+                    plugin_help
+                    exit 1
+                fi
+                
+                # Check if plugin is enabled
+                if [ ! -f "$PLUGINS_ENABLED_DIR/${plugin_name}.plugin" ] && [ ! -L "$PLUGINS_ENABLED_DIR/${plugin_name}.plugin" ]; then
+                    print_error "Plugin '$plugin_name' is not enabled"
+                    print_info "Try: lpdev plugin enable $plugin_name"
+                    exit 1
+                fi
+                
+                # Source the plugin and pass remaining arguments
+                source "$PLUGINS_ENABLED_DIR/${plugin_name}.plugin"
+                "$@"
+                ;;
+        esac
         ;;
     
     # Help

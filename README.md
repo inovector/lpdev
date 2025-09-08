@@ -80,7 +80,8 @@ lpdev start
 
 | Command | Description |
 |---------|-------------|
-| `lpdev start` | Start all development servers |
+| `lpdev dev` | Start full development environment (server, queue, logs, vite) |
+| `lpdev dev --exclude=service1,service2` | Start dev environment excluding specified services |
 | `lpdev start laravel` | Start only Laravel server |
 | `lpdev start npm` | Start only npm dev server |
 | `lpdev stop` | Stop all servers |
@@ -116,6 +117,77 @@ Configuration files are stored in `~/.lpdev/`:
 }
 ```
 
+### Environment Variables
+
+The `lpdev dev` command supports the following environment variables in your Laravel app's `.env` file:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LPDEV_QUEUE_NAME` | Specific queue name to listen to (only for queue:listen) | Uses default queue |
+| `LPDEV_EXCLUDE` | Default services to exclude from `lpdev dev` | None excluded |
+
+#### Queue Management
+
+The `lpdev dev` command automatically detects and uses the best queue management tool available:
+
+1. **Laravel Horizon with Watcher** (preferred for development): 
+   - Automatically installs `spatie/laravel-horizon-watcher` if not present
+   - Runs `php artisan horizon:watch` for hot-reloading configuration changes
+2. **Laravel Horizon** (if watcher not available): Runs `php artisan horizon`
+3. **Standard Queue**: Falls back to `php artisan queue:listen --tries=1`
+
+**Horizon Watcher Benefits:**
+- Automatically restarts Horizon when configuration files change
+- Perfect for development when tweaking queue settings
+- No manual restarts needed when modifying `config/horizon.php`
+
+If using standard queue:listen, you can specify a custom queue name:
+```env
+# .env file in your Laravel app
+LPDEV_QUEUE_NAME=high-priority  # Will run: php artisan queue:listen --queue=high-priority --tries=1
+```
+
+Note: LPDEV_QUEUE_NAME is ignored when Horizon is detected, as Horizon manages its own queue configuration.
+
+#### Service Exclusion
+
+The `lpdev dev` command supports excluding specific services with the `--exclude` flag:
+
+**Available Services:**
+- `server` - Laravel development server (`php artisan serve`)
+- `queue` - Queue worker (Horizon or queue:listen)
+- `logs` - Log tailing (`php artisan pail`) - Laravel 11+ only
+- `vite` - Vite dev server from package (`npm run dev`)  
+
+**Command Line Examples:**
+```bash
+lpdev dev --exclude=queue          # Skip queue worker
+lpdev dev --exclude=queue,logs     # Skip queue and logs
+```
+
+**Setting Default Exclusions:**
+You can set default exclusions in your Laravel app's `.env` file:
+```env
+# .env file in your Laravel app
+LPDEV_EXCLUDE=queue,logs           # Always exclude queue and logs by default
+```
+
+With `LPDEV_EXCLUDE` set, running `lpdev dev` will automatically exclude those services. You can still override with the `--exclude` flag:
+```bash
+lpdev dev                          # Uses LPDEV_EXCLUDE from .env
+lpdev dev --exclude=queue        # Overrides .env, excludes only queue
+```
+
+**Use Cases:**
+- Set `LPDEV_EXCLUDE=queue` you may prefer running `lpdev horizon-watch` separately
+- Set `LPDEV_EXCLUDE=logs` you may prefer using external log viewers
+
+## Plugin System
+
+lpdev supports a powerful plugin system for extending functionality. Plugins can hook into various lpdev operations and add custom commands.
+
+📚 **[Plugin Documentation](docs/PLUGINS.md)** - Complete guide to creating and using plugins
+
 ## Requirements
 
 - **Bash** 4.0+
@@ -142,8 +214,8 @@ lpdev add
 # Link package for development
 lpdev link
 
-# Start development servers
-lpdev start
+# Start full development environment (server, queue, logs, vite)
+lpdev dev
 
 # Run database migrations
 lpdev artisan migrate
