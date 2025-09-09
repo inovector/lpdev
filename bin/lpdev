@@ -18,6 +18,25 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
+# Get script directory for sourcing modules - handle symlinks correctly
+if [ -L "$0" ]; then
+    # If this script is a symlink, follow it to find the real location
+    REAL_SCRIPT="$(readlink "$0")"
+    # Handle relative symlinks
+    if [[ "$REAL_SCRIPT" != /* ]]; then
+        REAL_SCRIPT="$(dirname "$0")/$REAL_SCRIPT"
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
+else
+    # Not a symlink, use normal method
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+
+# Source utility modules
+source "$SCRIPT_DIR/../lib/utils.sh"
+source "$SCRIPT_DIR/../lib/project.sh" 
+source "$SCRIPT_DIR/../lib/server.sh"
+
 # Initialize configuration
 init_config() {
     if [ ! -d "$CONFIG_DIR" ]; then
@@ -256,72 +275,6 @@ ${BOLD}EXAMPLES:${NC}
     lpdev plugin mixpost status          # Run mixpost plugin command"
 }
 
-# Helper functions
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-print_info() {
-    echo -e "${CYAN}ℹ${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-print_header() {
-    echo -e "\n${BOLD}${BLUE}$1${NC}"
-    echo -e "${BLUE}$(printf '%.0s=' {1..50})${NC}"
-}
-
-# Project display helpers
-show_command_start() {
-    local current_project=$(get_current_project_name 2>/dev/null)
-    if [ -n "$current_project" ]; then
-        echo -e "${BOLD}${CYAN}📂 Project: ${current_project}${NC} | Command: ${GREEN}$1${NC}"
-        echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
-    fi
-}
-
-show_command_end() {
-    local current_project=$(get_current_project_name 2>/dev/null)
-    if [ -n "$current_project" ]; then
-        echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
-        echo -e "${BOLD}${GREEN}✓ Completed${NC} | Project: ${CYAN}${current_project}${NC} | Command: ${GREEN}$1${NC}"
-    fi
-}
-
-# JSON helpers (using jq if available, fallback to python)
-json_tool_available() {
-    if command -v jq &> /dev/null; then
-        echo "jq"
-    elif command -v python3 &> /dev/null; then
-        echo "python"
-    else
-        echo "none"
-    fi
-}
-
-# Helper function to set environment variable in a file
-set_env_var() {
-    local env_file=$1
-    local env_key=$2
-    local env_value=$3
-    
-    if [ -f "$env_file" ]; then
-        if grep -q "^$env_key=" "$env_file"; then
-            sed -i.bak "s|^$env_key=.*|$env_key=\"$env_value\"|" "$env_file"
-        else
-            echo "$env_key=\"$env_value\"" >> "$env_file"
-        fi
-        rm -f "${env_file}.bak"
-    fi
-}
-
 # Project management functions
 add_project() {
     print_header "Add New Project"
@@ -524,109 +477,6 @@ EOF
     fi
 }
 
-get_current_project() {
-    if [ ! -s "$CURRENT_PROJECT_FILE" ]; then
-        print_error "No project selected. Use 'lpdev switch' to select a project."
-        return 1
-    fi
-    
-    current=$(cat "$CURRENT_PROJECT_FILE")
-    
-    python3 << EOF
-import json
-import sys
-
-with open("$CONFIG_FILE", 'r') as f:
-    projects = json.load(f)
-
-for p in projects:
-    if p['name'] == "$current":
-        print(f"export LPDEV_PROJECT='{p['name']}'")
-        print(f"export LPDEV_APP_PATH='{p['app_path']}'")
-        print(f"export LPDEV_PACKAGE_PATH='{p['package_path']}'")
-        print(f"export LPDEV_PACKAGE_VENDOR='{p['package_vendor']}'")
-        print(f"export LPDEV_PACKAGE_VENDOR_PATH='{p['package_vendor_path']}'")
-        sys.exit(0)
-
-sys.exit(1)
-EOF
-}
-
-get_current_project_name() {
-    if [ ! -s "$CURRENT_PROJECT_FILE" ]; then
-        return 1
-    fi
-    
-    cat "$CURRENT_PROJECT_FILE"
-}
-
-# Server status detection
-check_server_status() {
-    local service_name="$1"
-    local process_pattern="$2"
-    local port="$3"
-    local project_specific="$4"
-    
-    local pid=""
-    local status=""
-    local details=""
-    
-    # Check for project-specific processes if requested
-    if [ "$project_specific" = "true" ] && [ -n "$LPDEV_PROJECT" ]; then
-        pid=$(pgrep -f "$process_pattern.*$LPDEV_PROJECT" 2>/dev/null | head -1)
-    fi
-    
-    # Fallback to general process pattern
-    if [ -z "$pid" ]; then
-        pid=$(pgrep -f "$process_pattern" 2>/dev/null | head -1)
-    fi
-    
-    if [ -n "$pid" ]; then
-        status="${GREEN}✓${NC}"
-        details="(PID: $pid"
-        
-        # Add port information if available
-        if [ -n "$port" ]; then
-            if netstat -an 2>/dev/null | grep -q ":$port.*LISTEN" || ss -ln 2>/dev/null | grep -q ":$port "; then
-                details="$details, Port: $port"
-            fi
-        fi
-        details="$details)"
-    else
-        status="${RED}✗${NC}"
-        details=""
-    fi
-    
-    echo -e "  $status $service_name $details"
-}
-
-show_running_servers() {
-    echo -e "${BOLD}Running Servers:${NC}"
-    
-    # Laravel server
-    check_server_status "Laravel server" "artisan serve" "8000" "false"
-    
-    # Laravel Horizon
-    local horizon_running=""
-    if pgrep -f "artisan horizon" > /dev/null 2>&1; then
-        check_server_status "Laravel Horizon" "artisan horizon" "" "false"
-        horizon_running="true"
-    fi
-    
-    # Laravel Queue Worker (only show if Horizon is not running)
-    if [ "$horizon_running" != "true" ]; then
-        check_server_status "Laravel Queue" "artisan queue:listen\|artisan queue:work" "" "false"
-    fi
-    
-    # Laravel Pail (logs)
-    check_server_status "Laravel Pail" "artisan pail" "" "false"
-    
-    # Package Vite dev server
-    if [ -d "$LPDEV_PACKAGE_PATH/node_modules" ]; then
-        check_server_status "Package Vite dev" "npm run dev.*$LPDEV_PACKAGE_PATH\|vite.*$LPDEV_PACKAGE_PATH" "" "false"
-    fi
-}
-
 remove_project() {
     list_projects
     
@@ -661,45 +511,6 @@ EOF
     fi
 }
 
-# Development commands
-get_package_name() {
-    local package_path="$1"
-    
-    if [ ! -f "$package_path/composer.json" ]; then
-        return 1
-    fi
-    
-    python3 << EOF
-import json
-try:
-    with open("$package_path/composer.json", 'r') as f:
-        package_data = json.load(f)
-    print(package_data.get('name', ''))
-except:
-    pass
-EOF
-}
-
-get_current_git_branch() {
-    local path="$1"
-    local default_branch="${2:-main}"
-    
-    if [ -d "$path/.git" ]; then
-        cd "$path"
-        local git_branch=$(git branch --show-current 2>/dev/null)
-        if [ -n "$git_branch" ]; then
-            echo "dev-$git_branch"
-            return 0
-        fi
-    fi
-    
-    # Fallback to default branch
-    print_warning "Could not detect git branch, using default: $default_branch"
-
-    echo "dev-$default_branch"
-}
-
-# Environment variable management
 set_project_env() {
     local key="$1"
     local value="$2"
