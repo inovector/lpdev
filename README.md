@@ -118,35 +118,36 @@ Configuration files are stored in `~/.lpdev/`:
 
 ### Environment Variables
 
-The `lpdev dev` command supports the following environment variables in your Laravel app's `.env` file:
+LPDEV supports project-specific environment variables stored in your project configuration:
+
+#### LPDEV Project Environment Variables
+
+Manage lpdev project configuration with these commands:
+
+- `lpdev env-set <key> <value>` - Set project environment variable
+- `lpdev env-remove <key>` - Remove project environment variable  
+- `lpdev env-list` - List all project environment variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LPDEV_QUEUE_NAME` | Specific queue name to listen to (only for queue:listen) | Uses default queue |
-| `LPDEV_EXCLUDE` | Default services to exclude from `lpdev dev` | None excluded |
+| `QUEUE_NAME` | Specific queue name to listen to (only for queue:listen) | Uses default queue |
+| `EXCLUDE` | Default services to exclude from `lpdev dev` | None excluded |
 
-#### Queue Management
+#### Setting Default Exclusions
 
-The `lpdev dev` command automatically detects and uses the best queue management tool available:
+```bash
+# Exclude specific services by default for this project
+lpdev env-set EXCLUDE "logs,vite"
 
-1. **Laravel Horizon with Watcher** (preferred for development): 
-   - Automatically installs `spatie/laravel-horizon-watcher` if not present
-   - Runs `php artisan horizon:watch` for hot-reloading configuration changes
-2. **Laravel Horizon** (if watcher not available): Runs `php artisan horizon`
-3. **Standard Queue**: Falls back to `php artisan queue:listen --tries=1`
+# Set custom queue name
+lpdev env-set QUEUE_NAME "high-priority"
 
-**Horizon Watcher Benefits:**
-- Automatically restarts Horizon when configuration files change
-- Perfect for development when tweaking queue settings
-- No manual restarts needed when modifying `config/horizon.php`
+# List current project environment variables
+lpdev env-list
 
-If using standard queue:listen, you can specify a custom queue name:
-```env
-# .env file in your Laravel app
-LPDEV_QUEUE_NAME=high-priority  # Will run: php artisan queue:listen --queue=high-priority --tries=1
+# Remove environment variable
+lpdev env-remove EXCLUDE
 ```
-
-Note: LPDEV_QUEUE_NAME is ignored when Horizon is detected, as Horizon manages its own queue configuration.
 
 #### Service Exclusion
 
@@ -165,21 +166,43 @@ lpdev dev --exclude=queue,logs     # Skip queue and logs
 ```
 
 **Setting Default Exclusions:**
-You can set default exclusions in your Laravel app's `.env` file:
-```env
-# .env file in your Laravel app
-LPDEV_EXCLUDE=queue,logs           # Always exclude queue and logs by default
+You can set default exclusions via lpdev project configuration:
+```bash
+# Set via lpdev project configuration
+lpdev env-set EXCLUDE "queue,logs"   # Always exclude queue and logs by default
 ```
 
-With `LPDEV_EXCLUDE` set, running `lpdev dev` will automatically exclude those services. You can still override with the `--exclude` flag:
+With `EXCLUDE` set, running `lpdev dev` will automatically exclude those services. You can still override with the `--exclude` flag:
 ```bash
-lpdev dev                          # Uses LPDEV_EXCLUDE from .env
-lpdev dev --exclude=queue        # Overrides .env, excludes only queue
+lpdev dev                        # Uses EXCLUDE from project config
+lpdev dev --exclude=queue        # Overrides config, excludes only queue
 ```
 
 **Use Cases:**
-- Set `LPDEV_EXCLUDE=queue` you may prefer running `lpdev horizon-watch` separately
-- Set `LPDEV_EXCLUDE=logs` you may prefer using external log viewers
+- Set `EXCLUDE=queue` if you prefer running `lpdev horizon-watch` separately
+- Set `EXCLUDE=logs` if you prefer using external log viewers
+
+#### Queue Management
+
+The `lpdev dev` command automatically detects and uses the best queue management tool available:
+
+1. **Laravel Horizon with Watcher** (if available): Runs `lpdev horizon-watch`. When using Horizon Watcher, make sure to exclude the horizon service from `lpdev dev` using `--exclude=queue` or setting `EXCLUDE=queue` in project config.
+2. **Laravel Horizon** Runs `php artisan horizon`
+3. **Standard Queue**: Falls back to `php artisan queue:listen --tries=1`
+
+
+**Horizon Watcher Benefits:**
+- Automatically restarts Horizon when configuration files change
+- Perfect for development when tweaking queue settings
+- No manual restarts needed when modifying `config/horizon.php`
+
+If using standard queue:listen, you can specify a custom queue name:
+```bash
+# Set via lpdev project configuration
+lpdev env-set QUEUE_NAME high-priority  # Will run: php artisan queue:listen --queue=high-priority --tries=1
+```
+
+Note: QUEUE_NAME is ignored when Horizon is detected, as Horizon manages its own queue configuration.
 
 ## Plugin System
 

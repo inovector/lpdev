@@ -278,6 +278,23 @@ print_header() {
     echo -e "${BLUE}$(printf '%.0s=' {1..50})${NC}"
 }
 
+# Project display helpers
+show_command_start() {
+    local current_project=$(get_current_project_name 2>/dev/null)
+    if [ -n "$current_project" ]; then
+        echo -e "${BOLD}${CYAN}📂 Project: ${current_project}${NC} | Command: ${GREEN}$1${NC}"
+        echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
+    fi
+}
+
+show_command_end() {
+    local current_project=$(get_current_project_name 2>/dev/null)
+    if [ -n "$current_project" ]; then
+        echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
+        echo -e "${BOLD}${GREEN}✓ Completed${NC} | Project: ${CYAN}${current_project}${NC} | Command: ${GREEN}$1${NC}"
+    fi
+}
+
 # JSON helpers (using jq if available, fallback to python)
 json_tool_available() {
     if command -v jq &> /dev/null; then
@@ -535,6 +552,81 @@ sys.exit(1)
 EOF
 }
 
+get_current_project_name() {
+    if [ ! -s "$CURRENT_PROJECT_FILE" ]; then
+        return 1
+    fi
+    
+    cat "$CURRENT_PROJECT_FILE"
+}
+
+# Server status detection
+check_server_status() {
+    local service_name="$1"
+    local process_pattern="$2"
+    local port="$3"
+    local project_specific="$4"
+    
+    local pid=""
+    local status=""
+    local details=""
+    
+    # Check for project-specific processes if requested
+    if [ "$project_specific" = "true" ] && [ -n "$LPDEV_PROJECT" ]; then
+        pid=$(pgrep -f "$process_pattern.*$LPDEV_PROJECT" 2>/dev/null | head -1)
+    fi
+    
+    # Fallback to general process pattern
+    if [ -z "$pid" ]; then
+        pid=$(pgrep -f "$process_pattern" 2>/dev/null | head -1)
+    fi
+    
+    if [ -n "$pid" ]; then
+        status="${GREEN}✓${NC}"
+        details="(PID: $pid"
+        
+        # Add port information if available
+        if [ -n "$port" ]; then
+            if netstat -an 2>/dev/null | grep -q ":$port.*LISTEN" || ss -ln 2>/dev/null | grep -q ":$port "; then
+                details="$details, Port: $port"
+            fi
+        fi
+        details="$details)"
+    else
+        status="${RED}✗${NC}"
+        details=""
+    fi
+    
+    echo -e "  $status $service_name $details"
+}
+
+show_running_servers() {
+    echo -e "${BOLD}Running Servers:${NC}"
+    
+    # Laravel server
+    check_server_status "Laravel server" "artisan serve" "8000" "false"
+    
+    # Laravel Horizon
+    local horizon_running=""
+    if pgrep -f "artisan horizon" > /dev/null 2>&1; then
+        check_server_status "Laravel Horizon" "artisan horizon" "" "false"
+        horizon_running="true"
+    fi
+    
+    # Laravel Queue Worker (only show if Horizon is not running)
+    if [ "$horizon_running" != "true" ]; then
+        check_server_status "Laravel Queue" "artisan queue:listen\|artisan queue:work" "" "false"
+    fi
+    
+    # Laravel Pail (logs)
+    check_server_status "Laravel Pail" "artisan pail" "" "false"
+    
+    # Package Vite dev server
+    if [ -d "$LPDEV_PACKAGE_PATH/node_modules" ]; then
+        check_server_status "Package Vite dev" "npm run dev.*$LPDEV_PACKAGE_PATH\|vite.*$LPDEV_PACKAGE_PATH" "" "false"
+    fi
+}
+
 remove_project() {
     list_projects
     
@@ -570,6 +662,162 @@ EOF
 }
 
 # Development commands
+get_package_name() {
+    local package_path="$1"
+    
+    if [ ! -f "$package_path/composer.json" ]; then
+        return 1
+    fi
+    
+    python3 << EOF
+import json
+try:
+    with open("$package_path/composer.json", 'r') as f:
+        package_data = json.load(f)
+    print(package_data.get('name', ''))
+except:
+    pass
+EOF
+}
+
+get_current_git_branch() {
+    local path="$1"
+    local default_branch="${2:-main}"
+    
+    if [ -d "$path/.git" ]; then
+        cd "$path"
+        local git_branch=$(git branch --show-current 2>/dev/null)
+        if [ -n "$git_branch" ]; then
+            echo "dev-$git_branch"
+            return 0
+        fi
+    fi
+    
+    # Fallback to default branch
+    print_warning "Could not detect git branch, using default: $default_branch"
+
+    echo "dev-$default_branch"
+}
+
+# Environment variable management
+set_project_env() {
+    local key="$1"
+    local value="$2"
+    
+    if [ -z "$key" ]; then
+        print_error "Environment variable key is required"
+        echo "Usage: lpdev env-set <KEY> <VALUE>"
+        return 1
+    fi
+    
+    eval $(get_current_project) || return 1
+    
+    print_info "Setting $key='$value' for project $LPDEV_PROJECT"
+    
+    python3 << EOF
+import json
+
+with open("$CONFIG_FILE", 'r') as f:
+    projects = json.load(f)
+
+for project in projects:
+    if project['name'] == "$LPDEV_PROJECT":
+        if 'env_vars' not in project:
+            project['env_vars'] = {}
+        project['env_vars']["$key"] = "$value"
+        break
+
+with open("$CONFIG_FILE", 'w') as f:
+    json.dump(projects, f, indent=2)
+
+print("Environment variable set successfully")
+EOF
+}
+
+remove_project_env() {
+    local key="$1"
+    
+    if [ -z "$key" ]; then
+        print_error "Environment variable key is required"
+        echo "Usage: lpdev env-remove <KEY>"
+        return 1
+    fi
+    
+    eval $(get_current_project) || return 1
+    
+    print_info "Removing $key from project $LPDEV_PROJECT"
+    
+    python3 << EOF
+import json
+
+with open("$CONFIG_FILE", 'r') as f:
+    projects = json.load(f)
+
+for project in projects:
+    if project['name'] == "$LPDEV_PROJECT":
+        if 'env_vars' in project and "$key" in project['env_vars']:
+            del project['env_vars']["$key"]
+            print("Environment variable '$key' removed successfully")
+        else:
+            print("Environment variable '$key' not found")
+        break
+
+with open("$CONFIG_FILE", 'w') as f:
+    json.dump(projects, f, indent=2)
+EOF
+}
+
+list_project_env() {
+    eval $(get_current_project) || return 1
+    
+    print_header "Environment Variables"
+    
+    python3 << EOF
+import json
+
+with open("$CONFIG_FILE", 'r') as f:
+    projects = json.load(f)
+
+for project in projects:
+    if project['name'] == "$LPDEV_PROJECT":
+        env_vars = project.get('env_vars', {})
+        if env_vars:
+            for key, value in env_vars.items():
+                print(f"  {key}={value}")
+        else:
+            print("  No environment variables set")
+        break
+EOF
+}
+
+get_project_env() {
+    local key="$1"
+    
+    if [ -z "$key" ]; then
+        return 1
+    fi
+    
+    eval $(get_current_project) || return 1
+    
+    python3 << EOF
+import json
+import sys
+
+with open("$CONFIG_FILE", 'r') as f:
+    projects = json.load(f)
+
+for project in projects:
+    if project['name'] == "$LPDEV_PROJECT":
+        env_vars = project.get('env_vars', {})
+        if "$key" in env_vars:
+            print(env_vars["$key"])
+            sys.exit(0)
+        break
+
+sys.exit(1)
+EOF
+}
+
 link_package() {
     eval $(get_current_project) || return 1
     
@@ -578,10 +826,91 @@ link_package() {
     print_info "Linking package for project: $LPDEV_PROJECT"
     
     cd "$LPDEV_APP_PATH"
-    rm -rf "$LPDEV_PACKAGE_VENDOR_PATH"
-    ln -s "$LPDEV_PACKAGE_PATH" "$LPDEV_PACKAGE_VENDOR_PATH"
     
-    print_success "Package linked successfully!"
+    # Get package name from package's composer.json
+    package_name=$(get_package_name "$LPDEV_PACKAGE_PATH")
+    
+    if [ -z "$package_name" ]; then
+        print_error "Could not get package name from composer.json at: $LPDEV_PACKAGE_PATH/composer.json"
+        return 1
+    fi
+    
+    print_info "Package name: $package_name"
+    
+    # Get current branch from package git repo
+    branch_name=$(get_current_git_branch "$LPDEV_PACKAGE_PATH")
+    
+    # Extract git branch name from dev-branch format for display
+    git_branch_display=${branch_name#dev-}
+    if [ "$git_branch_display" != "main" ]; then
+        print_info "Detected git branch: $git_branch_display -> Using: $branch_name"
+    else
+        print_info "Using default branch: $branch_name"
+    fi
+    
+    cd "$LPDEV_APP_PATH"
+    
+    # Calculate relative path from app to package
+    relative_path=$(python3 << EOF
+import os
+app_path = "$LPDEV_APP_PATH"
+package_path = "$LPDEV_PACKAGE_PATH"
+print(os.path.relpath(package_path, app_path))
+EOF
+)
+    
+    print_info "Relative path: $relative_path"
+    
+    # Update composer.json to add path repository and require the package
+    python3 << EOF
+import json
+import os
+
+# Read current composer.json
+with open("composer.json", 'r') as f:
+    composer_data = json.load(f)
+
+# Add repositories section if it doesn't exist
+if 'repositories' not in composer_data:
+    composer_data['repositories'] = []
+
+# Remove any existing repository with the same URL
+composer_data['repositories'] = [
+    repo for repo in composer_data['repositories'] 
+    if not (repo.get('type') == 'path' and repo.get('url') == "$relative_path")
+]
+
+# Add the new path repository
+composer_data['repositories'].append({
+    "type": "path",
+    "url": "$relative_path"
+})
+
+# Add or update the package in require section
+if 'require' not in composer_data:
+    composer_data['require'] = {}
+
+composer_data['require']['$package_name'] = '$branch_name'
+
+# Write back to composer.json
+with open("composer.json", 'w') as f:
+    json.dump(composer_data, f, indent=4)
+EOF
+    
+    print_success "Added path repository and package requirement to composer.json"
+    print_info "Repository: $relative_path"
+    print_info "Requirement: $package_name: $branch_name"
+    
+    # Run composer install to apply changes
+    print_info "Running composer install..."
+    composer install
+    
+    if [ $? -eq 0 ]; then
+        print_success "Package linked successfully via Composer path repository!"
+    else
+        print_error "Composer install failed"
+        return 1
+    fi
     
     call_plugin_hook "after_link_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
@@ -594,10 +923,70 @@ unlink_package() {
     print_info "Unlinking package for project: $LPDEV_PROJECT"
     
     cd "$LPDEV_APP_PATH"
-    rm -rf "$LPDEV_PACKAGE_VENDOR_PATH"
+    
+    # Get package name from package's composer.json
+    package_name=$(get_package_name "$LPDEV_PACKAGE_PATH")
+    
+    if [ -z "$package_name" ]; then
+        print_error "Could not get package name from composer.json at: $LPDEV_PACKAGE_PATH/composer.json"
+        return 1
+    fi
+    
+    print_info "Package name: $package_name"
+    
+    # Calculate relative path from app to package
+    relative_path=$(python3 << EOF
+import os
+app_path = "$LPDEV_APP_PATH"
+package_path = "$LPDEV_PACKAGE_PATH"
+print(os.path.relpath(package_path, app_path))
+EOF
+)
+    
+    # Remove path repository and package requirement from composer.json
+    python3 << EOF
+import json
+import os
+
+# Read current composer.json
+with open("composer.json", 'r') as f:
+    composer_data = json.load(f)
+
+# Remove the path repository if it exists
+if 'repositories' in composer_data:
+    composer_data['repositories'] = [
+        repo for repo in composer_data['repositories'] 
+        if not (repo.get('type') == 'path' and repo.get('url') == "$relative_path")
+    ]
+    
+    # Remove empty repositories array
+    if not composer_data['repositories']:
+        del composer_data['repositories']
+
+# Remove the package from require section
+if 'require' in composer_data and '$package_name' in composer_data['require']:
+    del composer_data['require']['$package_name']
+
+# Write back to composer.json
+with open("composer.json", 'w') as f:
+    json.dump(composer_data, f, indent=4)
+EOF
+    
+    print_success "Removed path repository and package requirement from composer.json"
+    print_info "Repository removed: $relative_path"
+    print_info "Package requirement removed: $package_name"
+    
+    # Remove vendor directory and run composer install to restore original packages
+    print_info "Removing vendor directory and running composer install..."
+    rm -rf vendor
     composer install
     
-    print_success "Package unlinked and restored from composer"
+    if [ $? -eq 0 ]; then
+        print_success "Package unlinked and restored from composer repositories"
+    else
+        print_error "Composer install failed"
+        return 1
+    fi
     
     call_plugin_hook "after_unlink_package" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
@@ -612,27 +1001,15 @@ switch_branch() {
     
     # If no branch provided, try to detect from git
     if [ -z "$branch" ]; then
-        # Check if package directory is a git repo
-        if [ -d "$LPDEV_PACKAGE_PATH/.git" ]; then
-            cd "$LPDEV_PACKAGE_PATH"
-            local git_branch=$(git branch --show-current 2>/dev/null)
-            
-            if [ -z "$git_branch" ]; then
-                print_error "Could not detect current git branch"
-                echo -n "Enter branch name manually (e.g., dev-your_branch): "
-                read branch
-            else
-                # Add 'dev-' prefix if not already present
-                if [[ "$git_branch" == dev-* ]]; then
-                    branch="$git_branch"
-                else
-                    branch="dev-$git_branch"
-                fi
-                print_info "Detected git branch: $git_branch -> Using: $branch"
-            fi
+        # Use existing get_current_git_branch function
+        branch=$(get_current_git_branch "$LPDEV_PACKAGE_PATH")
+        
+        # Extract git branch name from dev-branch format for display
+        local git_branch_display=${branch#dev-}
+        if [ "$git_branch_display" != "main" ]; then
+            print_info "Detected git branch: $git_branch_display -> Using: $branch"
         else
-            echo -n "Enter branch name (e.g., dev-your_branch): "
-            read branch
+            print_info "Using default branch: $branch"
         fi
     fi
     
@@ -694,30 +1071,19 @@ fresh_install() {
     
     # Step 2: Set current branch automatically
     print_info "Step 2/6: Setting branch from git..."
-    if [ -d "$LPDEV_PACKAGE_PATH/.git" ]; then
-        cd "$LPDEV_PACKAGE_PATH"
-        local git_branch=$(git branch --show-current 2>/dev/null)
-        
-        if [ -n "$git_branch" ]; then
-            # Add 'dev-' prefix if not already present
-            local branch
-            if [[ "$git_branch" == dev-* ]]; then
-                branch="$git_branch"
-            else
-                branch="dev-$git_branch"
-            fi
-            
-            print_info "Using branch: $git_branch -> $branch"
-            
-            cd "$LPDEV_APP_PATH"
-            sed -i.bak "s|\"$LPDEV_PACKAGE_VENDOR\": \".*\"|\"$LPDEV_PACKAGE_VENDOR\": \"$branch\"|" composer.json
-            rm composer.json.bak
-        else
-            print_info "No git branch detected, skipping branch update"
-        fi
+    local branch=$(get_current_git_branch "$LPDEV_PACKAGE_PATH")
+    
+    # Extract git branch name from dev-branch format for display
+    local git_branch_display=${branch#dev-}
+    if [ "$git_branch_display" != "main" ]; then
+        print_info "Detected git branch: $git_branch_display -> Using: $branch"
     else
-        print_info "Package is not a git repository, skipping branch update"
+        print_info "Using default branch: $branch"
     fi
+    
+    cd "$LPDEV_APP_PATH"
+    sed -i.bak "s|\"$LPDEV_PACKAGE_VENDOR\": \".*\"|\"$LPDEV_PACKAGE_VENDOR\": \"$branch\"|" composer.json
+    rm composer.json.bak
     
     # Step 3: Remove vendor and node_modules from app
     print_info "Step 3/6: Cleaning app dependencies..."
@@ -792,12 +1158,12 @@ start_dev() {
     
     cd "$LPDEV_APP_PATH"
 
-    # Check for default exclusions in .env file if no --exclude argument provided
-    if [ -z "$exclude_services" ] && [ -f ".env" ]; then
-        default_exclude=$(grep "^LPDEV_EXCLUDE=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+    # Check for default exclusions from project config if no --exclude argument provided
+    if [ -z "$exclude_services" ]; then
+        default_exclude=$(get_project_env "EXCLUDE" 2>/dev/null)
         if [ -n "$default_exclude" ]; then
             exclude_services="$default_exclude"
-            print_info "Using default exclusions from .env: $exclude_services"
+            print_info "Using default exclusions from project config: $exclude_services"
         fi
     fi
     
@@ -850,13 +1216,11 @@ start_dev() {
         else
             # Fall back to queue:listen with optional custom queue name
             queue_name=""
-            if [ -f ".env" ]; then
-                # Check if there's a specific queue name configured
-                custom_queue=$(grep "^LPDEV_QUEUE_NAME=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
-                if [ -n "$custom_queue" ]; then
-                    queue_name="--queue=$custom_queue"
-                    print_info "Using custom queue: $custom_queue"
-                fi
+            # Check if there's a specific queue name configured
+            custom_queue=$(get_project_env "QUEUE_NAME" 2>/dev/null)
+            if [ -n "$custom_queue" ]; then
+                queue_name="--queue=$custom_queue"
+                print_info "Using custom queue: $custom_queue"
             fi
             queue_cmd="php artisan queue:listen $queue_name --tries=1"
             print_info "Using standard queue:listen for queue management"
@@ -1030,15 +1394,15 @@ run_tests() {
     
     print_header "Running Tests for $LPDEV_PROJECT"
     
-    print_info "Running app tests..."
-    cd "$LPDEV_APP_PATH"
-    php artisan test
+    # print_info "Running app tests..."
+    # cd "$LPDEV_APP_PATH"
+    # php artisan test
     
     print_info "Running package tests..."
     cd "$LPDEV_PACKAGE_PATH"
-    if [ -f "vendor/bin/phpunit" ]; then
-        ./vendor/bin/phpunit
-    elif [ -f "vendor/bin/pest" ]; then
+    if [ -f "vendor/bin/pest" ]; then
+        ./vendor/bin/pest
+    elif [ -f "vendor/bin/phpunit" ]; then
         ./vendor/bin/pest
     else
         print_warning "No test runner found in package"
@@ -1117,6 +1481,7 @@ ngrok_share() {
     print_info "Starting ngrok tunnel for $LPDEV_PROJECT..."
     
     # Check if Laravel server is running
+    // TODO: Improve detection of Laravel server with function and with custom port support
     if ! pgrep -f "artisan serve" > /dev/null; then
         print_warning "Laravel server not detected. Starting it first..."
         cd "$LPDEV_APP_PATH"
@@ -1365,32 +1730,9 @@ show_status() {
         echo -e "${BOLD}Package Status:${NC} ${YELLOW}Composer Package${NC}"
     fi
     
-    # Check running processes
+    # Show running servers with detailed information
     echo ""
-    echo -e "${BOLD}Running Servers:${NC}"
-    
-    session_name="lpdev-$LPDEV_PROJECT"
-    if tmux has-session -t "$session_name" 2>/dev/null; then
-        echo -e "  ${GREEN}✓${NC} tmux session: $session_name"
-    fi
-    
-    if pgrep -f "artisan serve" > /dev/null; then
-        echo -e "  ${GREEN}✓${NC} Laravel server"
-    else
-        echo -e "  ${RED}✗${NC} Laravel server"
-    fi
-    
-    if pgrep -f "npm run dev" > /dev/null; then
-        echo -e "  ${GREEN}✓${NC} Laravel npm dev"
-    else
-        echo -e "  ${RED}✗${NC} Laravel npm dev"
-    fi
-    
-    if pgrep -f "npm run start" > /dev/null; then
-        echo -e "  ${GREEN}✓${NC} Package npm start"
-    else
-        echo -e "  ${RED}✗${NC} Package npm start"
-    fi
+    show_running_servers
 }
 
 exec_in_app() {
@@ -1405,6 +1747,105 @@ exec_in_package() {
     "$@"
 }
 
+show_laravel_versions() {
+    eval $(get_current_project) || return 1
+    
+    echo -e "${BOLD}${BLUE}Laravel Versions${NC}"
+    echo ""
+    
+    # Check Laravel version in app
+    echo -e "${BOLD}Application (${LPDEV_APP_PATH##*/}):${NC}"
+    if [ -f "$LPDEV_APP_PATH/composer.json" ]; then
+        cd "$LPDEV_APP_PATH"
+        
+        # Try to get version from artisan command first (most accurate)
+        if [ -f "$LPDEV_APP_PATH/artisan" ]; then
+            version=$(php artisan --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$version" ]; then
+                echo -e "  ${GREEN}Laravel ${version}${NC} (installed)"
+            else
+                # Fallback to composer.json requirement
+                version=$(grep -A1 '"laravel/framework"' composer.json | grep -oE '[0-9]+\.[0-9]+' | head -1)
+                if [ -n "$version" ]; then
+                    echo -e "  ${YELLOW}Laravel ^${version}${NC} (composer requirement)"
+                else
+                    echo -e "  ${RED}Laravel version not found${NC}"
+                fi
+            fi
+        else
+            echo -e "  ${RED}artisan file not found${NC}"
+        fi
+        
+        # Check actual installed Laravel framework version with composer show
+        if [ -d "$LPDEV_APP_PATH/vendor" ]; then
+            installed_laravel=$(composer show laravel/framework 2>/dev/null | grep "versions" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$installed_laravel" ]; then
+                echo -e "  ${CYAN}Composer: ${installed_laravel}${NC} (installed)"
+            fi
+        fi
+    else
+        echo -e "  ${RED}composer.json not found${NC}"
+    fi
+    
+    echo ""
+    
+    # Check Laravel version in package
+    echo -e "${BOLD}Package (${LPDEV_PACKAGE_PATH##*/}):${NC}"
+    if [ -f "$LPDEV_PACKAGE_PATH/composer.json" ]; then
+        cd "$LPDEV_PACKAGE_PATH"
+        
+        # Check for Laravel requirement in composer.json
+        laravel_req=$(grep -A1 '"laravel/framework"' composer.json 2>/dev/null | grep -oE '"[^"]+"' | tail -1 | tr -d '"')
+        if [ -n "$laravel_req" ]; then
+            echo -e "  ${GREEN}Laravel ${laravel_req}${NC} (requirement)"
+        else
+            # Check for illuminate packages as alternative
+            illuminate_version=$(grep -E '"illuminate/[^"]+"\s*:' composer.json 2>/dev/null | head -1 | grep -oE '"[^"]+"' | tail -1 | tr -d '"')
+            if [ -n "$illuminate_version" ]; then
+                echo -e "  ${GREEN}Illuminate ${illuminate_version}${NC} (requirement)"
+            else
+                echo -e "  ${YELLOW}No Laravel/Illuminate requirement found${NC}"
+            fi
+        fi
+        
+        # Check actual installed Laravel/Illuminate version using composer show
+        if [ -d "$LPDEV_PACKAGE_PATH/vendor" ]; then
+            # Try to get Laravel framework version
+            laravel_installed=$(composer show laravel/framework 2>/dev/null | grep "versions" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$laravel_installed" ]; then
+                echo -e "  ${CYAN}Laravel ${laravel_installed}${NC} (installed)"
+            else
+                # Try to get any illuminate package version as fallback
+                illuminate_installed=$(composer show 'illuminate/*' 2>/dev/null | head -1 | awk '{print $1, $2}')
+                if [ -n "$illuminate_installed" ]; then
+                    # Get just the first illuminate package to show the version
+                    first_pkg=$(echo "$illuminate_installed" | head -1)
+                    pkg_name=$(echo "$first_pkg" | awk '{print $1}' | sed 's/illuminate\///')
+                    pkg_version=$(echo "$first_pkg" | awk '{print $2}')
+                    echo -e "  ${CYAN}Illuminate ${pkg_version}${NC} (installed - ${pkg_name})"
+                fi
+            fi
+        fi
+        
+        # Check PHP requirement
+        php_req=$(grep '"php"' composer.json 2>/dev/null | grep -oE '"[^"]+"' | tail -1 | tr -d '"')
+        if [ -n "$php_req" ]; then
+            echo -e "  ${BLUE}PHP ${php_req}${NC} (requirement)"
+        fi
+    else
+        echo -e "  ${RED}composer.json not found${NC}"
+    fi
+    
+    echo ""
+    
+    # Show current PHP version for reference
+    php_version=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$php_version" ]; then
+        echo -e "${BOLD}System:${NC}"
+        echo -e "  ${BLUE}PHP ${php_version}${NC} (installed)"
+    fi
+}
+
 show_help() {
     echo -e "${BOLD}${BLUE}Laravel Package Development CLI${NC}
 
@@ -1417,38 +1858,42 @@ ${BOLD}PROJECT MANAGEMENT:${NC}
     ${GREEN}switch${NC}           Switch between projects
     ${GREEN}remove${NC}           Remove a project
     ${GREEN}status${NC}           Show current project status
+    ${GREEN}env-set${NC} <key> <val> Set lpdev project environment variable (e.g., EXCLUDE, QUEUE_NAME)
+    ${GREEN}env-remove${NC} <key>   Remove lpdev project environment variable  
+    ${GREEN}env-list${NC}           List all lpdev project environment variables
 
 ${BOLD}DEVELOPMENT:${NC}
     ${GREEN}link${NC}             Link local package for development
     ${GREEN}unlink${NC}           Restore package from composer
-    ${GREEN}branch${NC} <name>    Switch package branch in composer.json
+    ${GREEN}branch${NC} <name>    Switch package branch in application composer.json
     ${GREEN}install${NC}          Install all dependencies (app + package)
     ${GREEN}start${NC}            Start development servers (basic)
     ${GREEN}dev${NC} [--exclude=services] Start full dev environment (server, queue, logs, vite, package)
     ${GREEN}horizon-watch${NC}    Start Horizon with file watching (interactive)
     ${GREEN}stop${NC}             Stop all development servers
     ${GREEN}restart${NC}          Quick restart (stop, clear cache, start)
+    ${GREEN}fresh${NC}            Complete fresh install (link, branch, deps, cache)
+    ${GREEN}test${NC}             Run tests
 
 ${BOLD}LARAVEL COMMANDS:${NC}
     ${GREEN}artisan${NC} <cmd>    Run artisan command
     ${GREEN}clear${NC}            Clear all caches
-    ${GREEN}fresh${NC}            Complete fresh install (link, branch, deps, cache)
     ${GREEN}fresh-db${NC}         Fresh migration with seeders
     ${GREEN}migrate${NC}          Run migrations
     ${GREEN}tinker${NC}           Start tinker session
-    ${GREEN}test${NC}             Run tests
 
 ${BOLD}PACKAGE COMMANDS:${NC}
     ${GREEN}build${NC}            Build package assets
     ${GREEN}publish${NC}          Publish package assets
 
 ${BOLD}UTILITIES:${NC}
-    ${GREEN}env${NC} <key> <val>  Set environment variable
-    ${GREEN}app${NC} <cmd>        Execute command in app directory
-    ${GREEN}pkg${NC} <cmd>        Execute command in package directory
-    ${GREEN}share${NC}            Share app via ngrok tunnel (updates APP_URL)
-    ${GREEN}share-stop${NC}       Stop ngrok tunnel and restore APP_URL
-    ${GREEN}logs${NC}             Tail Laravel logs
+    ${GREEN}env${NC} <key> <val>          Set Laravel .env variable
+    ${GREEN}app${NC} <cmd>          Execute command in app directory
+    ${GREEN}pkg${NC} <cmd>          Execute command in package directory
+    ${GREEN}share${NC}              Share app via ngrok tunnel (updates APP_URL)
+    ${GREEN}share-stop${NC}         Stop ngrok tunnel and restore APP_URL
+    ${GREEN}logs${NC}               Tail Laravel logs
+    ${GREEN}laravel-versions${NC}   Show Laravel versions in app and package
 
 ${BOLD}PLUGINS:${NC}
     ${GREEN}plugin list${NC}      List installed plugins  
@@ -1474,6 +1919,15 @@ init_config
 load_plugins
 
 # Handle commands
+# Store the command for display
+COMMAND_NAME="${1:-help}"
+
+# Show command start (skip for help and project management commands that don't need project context)
+case "$COMMAND_NAME" in
+    help|h|--help|-h|add|list|ls|switch|sw|remove|rm|status) ;;
+    *) show_command_start "$COMMAND_NAME" ;;
+esac
+
 case "${1:-help}" in
     # Project management
     add) add_project ;;
@@ -1481,6 +1935,9 @@ case "${1:-help}" in
     switch|sw) switch_project ;;
     remove|rm) remove_project ;;
     status|st) show_status ;;
+    env-set) shift; set_project_env "$@" ;;
+    env-remove|lpdev-env-rm) shift; remove_project_env "$@" ;;
+    env-list|lpdev-env-ls) list_project_env ;;
     
     # Development
     link) link_package ;;
@@ -1499,6 +1956,7 @@ case "${1:-help}" in
     fresh-db) run_artisan "migrate:fresh" "--seed" ;;
     migrate|m) run_artisan "migrate" ;;
     tinker|t) run_artisan "tinker" ;;
+    laravel-versions|versions) show_laravel_versions ;;
     test) run_tests ;;
     
     # Package commands
@@ -1570,4 +2028,10 @@ case "${1:-help}" in
         echo "Run 'lpdev help' for usage information"
         exit 1
         ;;
+esac
+
+# Show command end (skip for help and project management commands that don't need project context)
+case "$COMMAND_NAME" in
+    help|h|--help|-h|add|list|ls|switch|sw|remove|rm|status) ;;
+    *) show_command_end "$COMMAND_NAME" ;;
 esac
