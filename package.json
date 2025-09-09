@@ -8,7 +8,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "test": "bash -n bin/lpdev && bash -n completions/lpdev-completion.bash"
+    "test": "bash -n bin/lpdev"
   },
   "keywords": [
     "laravel",
@@ -41,7 +41,6 @@
   ],
   "files": [
     "bin/",
-    "completions/",
     "scripts/",
     "index.js",
     "README.md",

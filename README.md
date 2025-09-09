@@ -8,7 +8,6 @@ A powerful CLI tool for managing Laravel package development workflows. Streamli
 - 🚀 **Development Server Management**: Start Laravel and npm dev servers with tmux integration
 - 📦 **Project Organization**: Manage multiple Laravel projects and packages
 - ⚡ **Quick Commands**: Shortcuts for common artisan and npm commands
-- 🎯 **Tab Completion**: Full bash completion support for all commands
 - 🔄 **Context Switching**: Easily switch between different projects
 
 ## Installation
