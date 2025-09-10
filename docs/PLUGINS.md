@@ -13,10 +13,13 @@ LPDEV now supports installing plugins directly from npm, making it easy to disco
 lpdev plugin search
 
 # Install a plugin from npm
-lpdev plugin install mixpost
+lpdev plugin install plugin-name
+
+# Or, install from a local directory:
+lpdev plugin install /path/to/your/plugin-directory
 
 # Enable the plugin
-lpdev plugin enable mixpost
+lpdev plugin enable plugin-name
 
 # List all installed plugins
 lpdev plugin list
@@ -26,13 +29,13 @@ lpdev plugin list
 
 ```bash
 # Execute plugin command
-lpdev plugin mixpost status
+lpdev plugin plugin_name status
 
 # Disable a plugin
-lpdev plugin disable mixpost
+lpdev plugin disable plugin_name
 
 # Uninstall a plugin
-lpdev plugin uninstall mixpost
+lpdev plugin uninstall plugin_name
 ```
 
 ## Plugin Management Commands
@@ -47,12 +50,12 @@ lpdev plugin uninstall mixpost
 | `lpdev plugin search [term]` | Search npm for plugins |
 | `lpdev plugin <name> <command>` | Execute plugin command |
 
-## Creating Plugins for NPM
+## Creating Plugins
 
 ### 1. Package Structure
 
 ```
-lpdev-plugin-yourname/
+lpdev-plugin-plugin_name/
 ├── package.json       # NPM package metadata
 ├── index.plugin       # Main plugin file (bash script)
 ├── README.md         # Documentation
@@ -63,19 +66,19 @@ lpdev-plugin-yourname/
 
 All lpdev plugins on npm must follow the naming pattern:
 ```
-lpdev-plugin-{yourname}
+lpdev-plugin-{plugin_name}
 ```
 
 For example:
 - `lpdev-plugin-mixpost`
 - `lpdev-plugin-docker`
-- `lpdev-plugin-testing`
+- `lpdev-plugin-tools`
 
 ### 3. package.json Structure
 
 ```json
 {
-  "name": "lpdev-plugin-yourname",
+  "name": "lpdev-plugin-plugin_name",
   "version": "1.0.0",
   "description": "Description of your lpdev plugin",
   "main": "index.plugin",
@@ -89,12 +92,15 @@ For example:
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/lpdev-plugin-yourname.git"
+    "url": "https://github.com/yourusername/lpdev-plugin-plugin_name.git"
   },
   "files": [
     "index.plugin",
     "README.md"
   ],
+  "scripts": {
+    "test": "bash -n index.plugin"
+  },
   "lpdev": {
     "hooks": ["on_env_set", "on_project_add"],
     "commands": ["status", "config", "help"]
@@ -108,7 +114,7 @@ For example:
 #!/bin/bash
 
 # Plugin metadata
-PLUGIN_NAME="yourname"
+PLUGIN_NAME="plugin_name"
 PLUGIN_VERSION="1.0.0"
 PLUGIN_DESCRIPTION="Your plugin description"
 
@@ -125,35 +131,35 @@ on_project_add() {
 # Plugin commands
 case "$1" in
     status)
-        plugin_yourname_status
+        plugin_plugin_name_status
         ;;
     config)
-        plugin_yourname_config "$2"
+        plugin_plugin_name_config "$2"
         ;;
     *)
-        plugin_yourname_help
+        plugin_plugin_name_help
         ;;
 esac
 
 # Command implementations
-plugin_yourname_status() {
+plugin_plugin_name_status() {
     eval $(get_current_project) || return 1
     
     print_header "[$PLUGIN_NAME] Status"
     # Your status logic here
 }
 
-plugin_yourname_config() {
+plugin_plugin_name_config() {
     local setting="$1"
     print_info "[$PLUGIN_NAME] Configuring: $setting"
     # Your config logic here
 }
 
-plugin_yourname_help() {
+plugin_plugin_name_help() {
     echo -e "${BOLD}${BLUE}Your Plugin Name${NC}
 
 ${BOLD}USAGE:${NC}
-    lpdev plugin yourname <command> [options]
+    lpdev plugin plugin_name <command> [options]
 
 ${BOLD}COMMANDS:${NC}
     ${GREEN}status${NC}        Show plugin status
@@ -161,8 +167,8 @@ ${BOLD}COMMANDS:${NC}
     ${GREEN}help${NC}          Show this help
 
 ${BOLD}EXAMPLES:${NC}
-    lpdev plugin yourname status
-    lpdev plugin yourname config setting-name"
+    lpdev plugin plugin_name status
+    lpdev plugin plugin_name config setting-name"
 }
 ```
 
@@ -191,7 +197,7 @@ npm login
 npm publish
 
 # Users can now install with:
-lpdev plugin install yourname
+lpdev plugin install plugin_name
 ```
 
 ## How It Works
@@ -230,20 +236,7 @@ lpdev plugin install yourname
 
 ## Example Plugins
 
-- `lpdev-plugin-mixpost` - Mixpost-specific development tools
-- `lpdev-plugin-docker` - Docker integration for Laravel development
-- `lpdev-plugin-testing` - Enhanced testing workflows
-- `lpdev-plugin-deploy` - Deployment helpers
-
-## Migrating Existing Plugins
-
-To convert a file-based plugin to npm:
-
-1. Create new directory: `lpdev-plugin-yourname/`
-2. Move plugin to `index.plugin`
-3. Add `package.json` with proper metadata
-4. Add `README.md` with documentation
-5. Publish to npm: `npm publish`
+- `lpdev-plugin-mixpost` - Mixpost.app specific development tools
 
 ## Troubleshooting
 
@@ -276,84 +269,3 @@ lpdev plugin disable other-plugin
 # Or uninstall
 lpdev plugin uninstall other-plugin
 ```
-
-This npm-based plugin system makes lpdev extensible and community-driven while maintaining simplicity and power.
-
-How to Install a Local Development Plugin
-
-  You can now install plugins that are in development using these methods:
-
-  1. Install from a local directory:
-
-  lpdev plugin install /path/to/your/plugin-directory
-
-  2. Install from a single plugin file:
-
-  lpdev plugin install /path/to/your/plugin.plugin
-
-  3. Install from npm (original method):
-
-  lpdev plugin install plugin-name
-
-  Plugin Structure
-
-  For a local plugin to work, it needs:
-
-  1. A .plugin file (one of these):
-    - index.plugin (preferred)
-    - plugin.sh
-    - any-name.plugin
-  2. Plugin file format:
-  #!/bin/bash
-
-  # Plugin metadata
-  PLUGIN_NAME="my-plugin"
-  PLUGIN_VERSION="1.0.0"
-  PLUGIN_DESCRIPTION="Description of what the plugin does"
-
-  # Hook implementations
-  on_project_add() {
-      echo "Project added: $1"
-  }
-
-  before_link_package() {
-      echo "Before linking package"
-  }
-
-  # Custom commands
-  my_custom_command() {
-      echo "Running custom command"
-  }
-
-  Example: Creating and Installing a Local Plugin
-
-  1. Create plugin directory:
-  mkdir ~/my-lpdev-plugin
-  cd ~/my-lpdev-plugin
-
-  2. Create plugin file:
-  cat > index.plugin << 'EOF'
-  #!/bin/bash
-
-  PLUGIN_NAME="my-custom-plugin"
-  PLUGIN_VERSION="1.0.0"
-
-  # Hook example
-  after_fresh_install() {
-      print_info "Running my custom post-install tasks..."
-  }
-
-  # Custom command
-  my_command() {
-      print_success "Hello from my custom plugin!"
-  }
-  EOF
-
-  3. Install the plugin:
-  lpdev plugin install ~/my-lpdev-plugin
-
-  4. Enable the plugin:
-  lpdev plugin enable my-custom-plugin
-
-  5. Use the plugin:
-  lpdev plugin my-custom-plugin my_command
