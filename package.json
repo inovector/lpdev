@@ -1,6 +1,6 @@
 {
   "name": "lpdev",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Laravel Package Development CLI - Manage Laravel package development workflows with ease",
   "main": "index.js",
   "bin": {
