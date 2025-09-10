@@ -278,3 +278,82 @@ lpdev plugin uninstall other-plugin
 ```
 
 This npm-based plugin system makes lpdev extensible and community-driven while maintaining simplicity and power.
+
+How to Install a Local Development Plugin
+
+  You can now install plugins that are in development using these methods:
+
+  1. Install from a local directory:
+
+  lpdev plugin install /path/to/your/plugin-directory
+
+  2. Install from a single plugin file:
+
+  lpdev plugin install /path/to/your/plugin.plugin
+
+  3. Install from npm (original method):
+
+  lpdev plugin install plugin-name
+
+  Plugin Structure
+
+  For a local plugin to work, it needs:
+
+  1. A .plugin file (one of these):
+    - index.plugin (preferred)
+    - plugin.sh
+    - any-name.plugin
+  2. Plugin file format:
+  #!/bin/bash
+
+  # Plugin metadata
+  PLUGIN_NAME="my-plugin"
+  PLUGIN_VERSION="1.0.0"
+  PLUGIN_DESCRIPTION="Description of what the plugin does"
+
+  # Hook implementations
+  on_project_add() {
+      echo "Project added: $1"
+  }
+
+  before_link_package() {
+      echo "Before linking package"
+  }
+
+  # Custom commands
+  my_custom_command() {
+      echo "Running custom command"
+  }
+
+  Example: Creating and Installing a Local Plugin
+
+  1. Create plugin directory:
+  mkdir ~/my-lpdev-plugin
+  cd ~/my-lpdev-plugin
+
+  2. Create plugin file:
+  cat > index.plugin << 'EOF'
+  #!/bin/bash
+
+  PLUGIN_NAME="my-custom-plugin"
+  PLUGIN_VERSION="1.0.0"
+
+  # Hook example
+  after_fresh_install() {
+      print_info "Running my custom post-install tasks..."
+  }
+
+  # Custom command
+  my_command() {
+      print_success "Hello from my custom plugin!"
+  }
+  EOF
+
+  3. Install the plugin:
+  lpdev plugin install ~/my-lpdev-plugin
+
+  4. Enable the plugin:
+  lpdev plugin enable my-custom-plugin
+
+  5. Use the plugin:
+  lpdev plugin my-custom-plugin my_command

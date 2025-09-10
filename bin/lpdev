@@ -125,50 +125,100 @@ plugin_list() {
 }
 
 plugin_install() {
-    local plugin_name="$1"
+    local plugin_source="$1"
     
-    if [ -z "$plugin_name" ]; then
-        print_error "Plugin name required. Usage: lpdev plugin install <name>"
+    if [ -z "$plugin_source" ]; then
+        print_error "Plugin name or path required."
+        print_info "Usage: lpdev plugin install <name>          # Install from npm"
+        print_info "       lpdev plugin install /path/to/plugin  # Install from local path"
         return 1
     fi
-    
-    print_info "Installing plugin: $plugin_name"
     
     # Create plugins directory if it doesn't exist
     mkdir -p "$PLUGINS_AVAILABLE_DIR"
     
-    # Check if it's an npm package
-    cd "$PLUGINS_AVAILABLE_DIR"
-    
-    # Initialize npm if package.json doesn't exist
-    if [ ! -f "package.json" ]; then
-        npm init -y > /dev/null 2>&1
-    fi
-    
-    # Try to install from npm
-    local npm_package="lpdev-plugin-$plugin_name"
-    
-    print_info "Searching npm for: $npm_package"
-    
-    if npm view "$npm_package" > /dev/null 2>&1; then
-        print_info "Found npm package: $npm_package"
-        npm install "$npm_package"
+    # Check if it's a local path
+    if [ -d "$plugin_source" ] || [ -f "$plugin_source" ]; then
+        print_info "Installing local plugin from: $plugin_source"
         
-        if [ $? -eq 0 ]; then
-            # Create symlink to plugin file
-            if [ -f "node_modules/$npm_package/index.plugin" ]; then
-                ln -sf "node_modules/$npm_package/index.plugin" "$plugin_name.plugin"
-                print_success "Plugin '$plugin_name' installed successfully!"
-                print_info "Enable it with: lpdev plugin enable $plugin_name"
+        # Handle directory (containing plugin files)
+        if [ -d "$plugin_source" ]; then
+            local plugin_dir="$plugin_source"
+            local plugin_file=""
+            
+            # Look for .plugin file
+            if [ -f "$plugin_dir/index.plugin" ]; then
+                plugin_file="$plugin_dir/index.plugin"
+            elif [ -f "$plugin_dir/plugin.sh" ]; then
+                plugin_file="$plugin_dir/plugin.sh"
             else
-                print_error "Plugin installed but index.plugin not found"
+                # Find first .plugin file
+                plugin_file=$(find "$plugin_dir" -maxdepth 1 -name "*.plugin" | head -1)
             fi
-        else
-            print_error "Failed to install plugin from npm"
+            
+            if [ -z "$plugin_file" ] || [ ! -f "$plugin_file" ]; then
+                print_error "No plugin file found in directory"
+                print_info "Plugin must have index.plugin or *.plugin file"
+                return 1
+            fi
+            
+            # Extract plugin name from directory or file
+            local plugin_name=$(basename "$plugin_dir")
+            plugin_name="${plugin_name#lpdev-plugin-}"  # Remove prefix if present
+            
+            # Create symlink to plugin file
+            ln -sf "$(realpath "$plugin_file")" "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin"
+            print_success "Local plugin '$plugin_name' installed successfully!"
+            print_info "Enable it with: lpdev plugin enable $plugin_name"
+            
+        # Handle single plugin file
+        elif [ -f "$plugin_source" ]; then
+            local plugin_file="$(realpath "$plugin_source")"
+            local plugin_name=$(basename "$plugin_file" .plugin)
+            plugin_name="${plugin_name#lpdev-plugin-}"  # Remove prefix if present
+            
+            # Create symlink to plugin file
+            ln -sf "$plugin_file" "$PLUGINS_AVAILABLE_DIR/$plugin_name.plugin"
+            print_success "Local plugin '$plugin_name' installed successfully!"
+            print_info "Enable it with: lpdev plugin enable $plugin_name"
         fi
     else
-        print_error "Plugin '$npm_package' not found on npm"
-        print_info "Try searching with: lpdev plugin search $plugin_name"
+        # Install from npm (original behavior)
+        local plugin_name="$plugin_source"
+        print_info "Installing plugin from npm: $plugin_name"
+        
+        cd "$PLUGINS_AVAILABLE_DIR"
+        
+        # Initialize npm if package.json doesn't exist
+        if [ ! -f "package.json" ]; then
+            npm init -y > /dev/null 2>&1
+        fi
+        
+        # Try to install from npm
+        local npm_package="lpdev-plugin-$plugin_name"
+        
+        print_info "Searching npm for: $npm_package"
+        
+        if npm view "$npm_package" > /dev/null 2>&1; then
+            print_info "Found npm package: $npm_package"
+            npm install "$npm_package"
+            
+            if [ $? -eq 0 ]; then
+                # Create symlink to plugin file
+                if [ -f "node_modules/$npm_package/index.plugin" ]; then
+                    ln -sf "node_modules/$npm_package/index.plugin" "$plugin_name.plugin"
+                    print_success "Plugin '$plugin_name' installed successfully!"
+                    print_info "Enable it with: lpdev plugin enable $plugin_name"
+                else
+                    print_error "Plugin installed but index.plugin not found"
+                fi
+            else
+                print_error "Failed to install plugin from npm"
+            fi
+        else
+            print_error "Plugin '$npm_package' not found on npm"
+            print_info "Try searching with: lpdev plugin search $plugin_name"
+        fi
     fi
 }
 
@@ -1210,7 +1260,7 @@ env_set() {
     # Set in app .env
     cd "$LPDEV_APP_PATH"
     set_env_var ".env" "$key" "$value"
-    print_success "App: $key=$value"
+    print_success "Env var set: $key=$value"
     
     call_plugin_hook "on_env_set" "$key" "$value" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
@@ -1912,7 +1962,7 @@ case "$COMMAND_NAME" in
     *) show_command_start "$COMMAND_NAME" ;;
 esac
 
-case "${1:-help}" in
+case "$COMMAND_NAME" in
     # Project management
     add) add_project ;;
     list|ls) list_projects ;;
@@ -1979,6 +2029,9 @@ case "${1:-help}" in
                 ;;
             search)
                 plugin_search "$2"
+                ;;
+            validate)
+                plugin_validate "$2"
                 ;;
             *)
                 # Execute plugin command

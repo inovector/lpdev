@@ -63,11 +63,33 @@ set_env_var() {
     local env_key=$2
     local env_value=$3
     
+    # Determine if value should be quoted or not
+    local formatted_value=""
+    
+    # Check if value is boolean, null, or numeric - these should not be quoted
+    case "$env_value" in
+        "true"|"false"|"null")
+            formatted_value="$env_value"
+            ;;
+        *[!0-9.-]*)
+            # Contains non-numeric characters, needs quotes
+            formatted_value="\"$env_value\""
+            ;;
+        "")
+            # Empty value, use quotes
+            formatted_value='""'
+            ;;
+        *)
+            # Numeric value (integer or decimal), no quotes
+            formatted_value="$env_value"
+            ;;
+    esac
+    
     if [ -f "$env_file" ]; then
         if grep -q "^$env_key=" "$env_file"; then
-            sed -i.bak "s|^$env_key=.*|$env_key=\"$env_value\"|" "$env_file"
+            sed -i.bak "s|^$env_key=.*|$env_key=$formatted_value|" "$env_file"
         else
-            echo "$env_key=\"$env_value\"" >> "$env_file"
+            echo "$env_key=$formatted_value" >> "$env_file"
         fi
         rm -f "${env_file}.bak"
     fi
