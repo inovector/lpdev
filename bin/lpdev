@@ -978,7 +978,7 @@ start_dev() {
         fi
     fi
     
-    print_header "Starting Development Environment for $LPDEV_PROJECT"
+    print_header "Starting Development Environment"
     
     if [ -n "$exclude_services" ]; then
         print_info "Excluding services: $exclude_services"
@@ -1064,6 +1064,17 @@ start_dev() {
         names+=("logs")
     fi
     
+    # Add Reverb (WebSocket server) if available and not excluded
+    if ! is_excluded "reverb"; then
+        # Check if Reverb is available
+        if php artisan list | grep -q "reverb:start"; then
+            commands+=("php artisan reverb:start")
+            colors+=("#86efac")
+            names+=("reverb")
+            print_info "Laravel Reverb detected - will start WebSocket server"
+        fi
+    fi
+    
     # Add vite if not excluded
     if ! is_excluded "vite"; then
         commands+=("cd $LPDEV_PACKAGE_PATH && npm run dev")
@@ -1107,6 +1118,8 @@ stop_dev() {
     pkill -f "artisan horizon" 2>/dev/null
     pkill -f "horizon:watch" 2>/dev/null
     pkill -f "artisan pail" 2>/dev/null
+    pkill -f "artisan reverb" 2>/dev/null
+    pkill -f "reverb:start" 2>/dev/null
     pkill -f "npm run dev" 2>/dev/null
     pkill -f "npm run start" 2>/dev/null
     pkill -f "vite" 2>/dev/null

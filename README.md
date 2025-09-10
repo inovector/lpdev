@@ -157,6 +157,7 @@ The `lpdev dev` command supports excluding specific services with the `--exclude
 - `server` - Laravel development server (`php artisan serve`)
 - `queue` - Queue worker (Horizon or queue:listen)
 - `logs` - Log tailing (`php artisan pail`) - Laravel 11+ only
+- `reverb` - Laravel Reverb WebSocket server (`php artisan reverb:start`)
 - `vite` - Vite dev server from package (`npm run dev`)  
 
 **Command Line Examples:**
