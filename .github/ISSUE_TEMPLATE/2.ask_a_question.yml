@@ -1,0 +1,9 @@
+name: Ask a question
+description: Write your question here to get help
+labels: question
+body:
+  - type: textarea
+    attributes:
+      label: Detailed description
+    validations:
+      required: false

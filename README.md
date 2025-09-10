@@ -303,12 +303,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT
-
-## Author
-
-Dima Botezatu - [dimabotezatu.com](https://dimabotezatu.com)
-
-## Support
-
-For issues and questions, please use the [GitHub issue tracker](https://github.com/yourusername/lpdev/issues).
+LPDEV is licensed under the [MIT License](LICENSE.md), sponsored and supported by [Inovector](https://inovector.com).
