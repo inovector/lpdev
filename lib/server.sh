@@ -59,6 +59,9 @@ show_running_servers() {
     
     # Laravel Pail (logs)
     check_server_status "Laravel Pail" "artisan pail" "" "false"
+
+    # Laravel Reverb (Websockets)
+    check_server_status "Laravel Reverb" "artisan reverb:serve" "" "false"
     
     # Package Vite dev server
     if [ -d "$LPDEV_PACKAGE_PATH/node_modules" ]; then

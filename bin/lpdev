@@ -36,6 +36,7 @@ fi
 source "$SCRIPT_DIR/../lib/utils.sh"
 source "$SCRIPT_DIR/../lib/project.sh" 
 source "$SCRIPT_DIR/../lib/server.sh"
+source "$SCRIPT_DIR/../lib/dev-tools.sh"
 
 # Initialize configuration
 init_config() {
@@ -715,6 +716,7 @@ EOF
     # Run composer install to apply changes
     print_info "Running composer install..."
     composer install
+    installDevTools
     
     if [ $? -eq 0 ]; then
         print_success "Package linked successfully via Composer path repository!"
@@ -854,8 +856,10 @@ install_deps() {
     # Install app dependencies
     print_info "Installing app dependencies..."
     cd "$LPDEV_APP_PATH"
-    rm -rf vendor
+    rm -rf vendor node_modules
     composer install
+    npm install
+    installDevTools
     
     # Install package dependencies
     print_info "Installing package dependencies..."
@@ -872,7 +876,7 @@ install_deps() {
 fresh_install() {
     eval $(get_current_project) || return 1
     
-    print_header "Fresh Install for $LPDEV_PROJECT"
+    print_header "Fresh Install..."
 
     call_plugin_hook "before_fresh_install" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
@@ -921,29 +925,36 @@ fresh_install() {
         npm install
     fi
     
-    # Install app dependencies (PHP only)
+    # Install app dependencies (PHP + JS)
     print_info "Installing app dependencies (PHP only)..."
     cd "$LPDEV_APP_PATH"
-    composer install
+
+    if [ -f "composer.json" ]; then
+        composer install
+    fi
+
+    if [ -f "package.json" ]; then
+        npm install
+    fi
+
+    installDevTools
     
     # Step 6: Clear Laravel optimizations
     print_info "Step 6/6: Clearing Laravel cache..."
     cd "$LPDEV_APP_PATH"
     php artisan optimize:clear
 
-    call_plugin_hook "after_fresh_install" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
-    
     print_success "Fresh install completed successfully!"
     print_info "Package linked, dependencies installed, and Laravel cache cleared"
-    
-    # Display APP_URL
-    if [ -f "$LPDEV_APP_PATH/.env" ]; then
-        app_url=$(grep "^APP_URL=" "$LPDEV_APP_PATH/.env" | cut -d'=' -f2- | tr -d '"')
-        if [ -n "$app_url" ]; then
-            echo ""
-            print_info "Application available at: ${GREEN}$app_url${NC}"
-        fi
+
+    local appUrl=$(getAppUrl)
+
+    if [ -n "$appUrl" ]; then
+        echo ""
+        print_info "Application available at:" "$appUrl"
     fi
+
+    call_plugin_hook "after_fresh_install" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
 start_dev() {
@@ -998,7 +1009,7 @@ start_dev() {
         echo ",$exclude_services," | grep -q ",$service,"
     }
     
-    # Check if pail is available (Laravel 11+)
+    # Check if pail is available
     has_pail=false
     if php artisan list | grep -q "pail"; then
         has_pail=true
@@ -1014,16 +1025,9 @@ start_dev() {
         # Check if Horizon is available
         if php artisan list | grep -q "horizon:work\|horizon$"; then
             # Use standard horizon for concurrently environment
-            queue_cmd="php artisan horizon"
+            queue_cmd="php artisan horizon:watch"
             
-            # Check if spatie/laravel-horizon-watcher is installed for future manual use
-            if ! composer show spatie/laravel-horizon-watcher >/dev/null 2>&1; then
-                print_info "Installing spatie/laravel-horizon-watcher for manual horizon:watch usage..."
-                composer require --dev spatie/laravel-horizon-watcher
-                print_info "Laravel Horizon detected - using horizon (use 'lpdev horizon-watch' for file watching)"
-            else
-                print_info "Laravel Horizon detected - using horizon (use 'lpdev horizon-watch' for file watching)"
-            fi
+            installHorizonWatcher
         else
             # Fall back to queue:listen with optional custom queue name
             queue_name=""
@@ -1269,11 +1273,7 @@ horizon_watch() {
         return 1
     fi
     
-    # Check if spatie/laravel-horizon-watcher is installed
-    if ! composer show spatie/laravel-horizon-watcher >/dev/null 2>&1; then
-        print_info "Installing spatie/laravel-horizon-watcher..."
-        composer require --dev spatie/laravel-horizon-watcher
-    fi
+    installHorizonWatcher
     
     # Check if horizon:watch command is available
     if php artisan list | grep -q "horizon:watch"; then
@@ -1290,11 +1290,144 @@ horizon_watch() {
     call_plugin_hook "after_horizon_watch" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
 
-ngrok_share() {
+share() {
     eval $(get_current_project) || return 1
     
     call_plugin_hook "before_ngrok_share" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
+    # Detect if using Valet
+    local use_valet=false
+    local valet_domain=""
+    
+    if command -v valet &> /dev/null; then
+        # Check if current directory is served by Valet
+        cd "$LPDEV_APP_PATH"
+        
+        # Try to get the Valet domain
+        if [ -f ".env" ]; then
+            current_app_url=$(grep "^APP_URL=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+            if [[ "$current_app_url" == *".test"* ]] || [[ "$current_app_url" == *".local"* ]]; then
+                # Extract domain from APP_URL
+                valet_domain=$(echo "$current_app_url" | sed 's|https\?://||' | sed 's|/.*||')
+                
+                # Check if Valet is serving this domain
+                if valet links 2>/dev/null | grep -q "$LPDEV_APP_PATH"; then
+                    use_valet=true
+                    print_info "Valet detected for this project"
+                fi
+            fi
+        fi
+    fi
+    
+    if [ "$use_valet" = true ]; then
+        print_info "Starting Valet share for $valet_domain..."
+        
+        # Create temp files for output
+        temp_out=$(mktemp)
+        temp_err=$(mktemp)
+        
+        # Start valet share in background with proper output capture
+        # Using script command to handle interactive output
+        if command -v script &> /dev/null; then
+            # macOS version of script
+            script -q "$temp_out" valet share 2>"$temp_err" &
+            valet_pid=$!
+        else
+            # Linux version or fallback
+            valet share > "$temp_out" 2>"$temp_err" &
+            valet_pid=$!
+        fi
+        
+        print_info "Valet share started with PID: $valet_pid"
+        print_info "Monitoring for public URL (will wait up to 15 seconds)..."
+        
+        # Monitor for the share URL
+        local count=0
+        local max_attempts=30  # 15 seconds
+        share_url=""
+        
+        while [ $count -lt $max_attempts ]; do
+            # Check both output files for the URL
+            if [ -f "$temp_out" ]; then
+                share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.app)' "$temp_out" 2>/dev/null | head -1)
+            fi
+            
+            # Also check stderr
+            if [ -z "$share_url" ] && [ -f "$temp_err" ]; then
+                share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.app)' "$temp_err" 2>/dev/null | head -1)
+            fi
+            
+            # Also check if valet process is still running
+            if ! kill -0 $valet_pid 2>/dev/null; then
+                # Process ended, get any final output
+                sleep 0.5
+                if [ -f "$temp_out" ]; then
+                    share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.app)' "$temp_out" 2>/dev/null | head -1)
+                fi
+                break
+            fi
+            
+            if [ -n "$share_url" ]; then
+                break
+            fi
+            
+            sleep 0.5
+            count=$((count + 1))
+            
+            if [ $((count % 4)) -eq 0 ]; then
+                echo -n "."
+            fi
+        done
+        
+        echo ""
+        
+        if [ -n "$share_url" ]; then
+            print_success "Valet share started successfully!"
+            print_info "Public URL:" "$share_url"
+            print_info "Valet share is running in background (PID: $valet_pid)"
+            
+            # Save share type and PID
+            echo "valet" > "$CONFIG_DIR/share_type"
+            echo "$valet_pid" > "$CONFIG_DIR/share_pid"
+            echo "$share_url" > "$CONFIG_DIR/share_url"
+            
+            # Backup and update APP_URL
+            if [ -f ".env" ]; then
+                current_app_url=$(grep "^APP_URL=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
+                if [ -n "$current_app_url" ]; then
+                    echo "$current_app_url" > "$CONFIG_DIR/share_original_url"
+                    print_info "Backed up original APP_URL: $current_app_url"
+                fi
+            fi
+            
+            set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$share_url"
+            print_success "APP_URL updated to: $share_url"
+            
+            print_info "To stop sharing: lpdev share-stop"
+            call_plugin_hook "on_ngrok_share" "$share_url" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
+        else
+            print_error "Could not detect Valet share URL"
+            print_info "Valet share output:"
+            if [ -f "$temp_out" ]; then
+                cat "$temp_out"
+            fi
+            if [ -f "$temp_err" ] && [ -s "$temp_err" ]; then
+                print_warning "Errors:"
+                cat "$temp_err"
+            fi
+            
+            # Try to kill the valet process if it's still running
+            if kill -0 $valet_pid 2>/dev/null; then
+                kill $valet_pid 2>/dev/null
+            fi
+        fi
+        
+        # Clean up temp files
+        rm -f "$temp_out" "$temp_err"
+        return
+    fi
+    
+    # Fall back to ngrok if not using Valet
     # Check if ngrok is available
     if ! command -v ngrok &> /dev/null; then
         print_error "ngrok is not installed or not in PATH"
@@ -1302,10 +1435,9 @@ ngrok_share() {
         return 1
     fi
     
-    print_info "Starting ngrok tunnel for $LPDEV_PROJECT..."
+    print_info "Starting ngrok tunnel..."
     
     # Check if Laravel server is running
-    // TODO: Improve detection of Laravel server with function and with custom port support
     if ! pgrep -f "artisan serve" > /dev/null; then
         print_warning "Laravel server not detected. Starting it first..."
         cd "$LPDEV_APP_PATH"
@@ -1350,7 +1482,8 @@ ngrok_share() {
         if command -v curl &> /dev/null; then
             tunnel_info=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null)
             if [ -n "$tunnel_info" ]; then
-                share_url=$(echo "$tunnel_info" | grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok\.io' | head -1)
+                # Parse XML response to extract PublicURL
+                share_url=$(echo "$tunnel_info" | grep -oP '(?<=<PublicURL>)[^<]+' | head -1)
                 if [ -n "$share_url" ]; then
                     break
                 fi
@@ -1359,7 +1492,7 @@ ngrok_share() {
         
         # Fallback: try to parse log file
         if [ -f "$temp_file" ] && [ -z "$share_url" ]; then
-            share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.ngrok\.io' "$temp_file" 2>/dev/null | head -1)
+            share_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.app)' "$temp_file" 2>/dev/null | head -1)
             if [ -n "$share_url" ]; then
                 break
             fi
@@ -1388,14 +1521,14 @@ ngrok_share() {
         print_success "ngrok tunnel started successfully!"
         print_info "Public URL: ${GREEN}$share_url${NC}"
         print_info "ngrok is running in background (PID: $ngrok_pid)"
-        print_info "Local URL: http://localhost:$laravel_port"
+        print_info "Local URL:" "http://localhost:$laravel_port"
         
         # Backup current APP_URL before changing it
         cd "$LPDEV_APP_PATH"
         if [ -f ".env" ]; then
             current_app_url=$(grep "^APP_URL=" .env | cut -d'=' -f2- | tr -d '"' 2>/dev/null)
             if [ -n "$current_app_url" ]; then
-                echo "$current_app_url" > "$CONFIG_DIR/ngrok_share_original_url"
+                echo "$current_app_url" > "$CONFIG_DIR/share_original_url"
                 print_info "Backed up original APP_URL: $current_app_url"
             fi
         fi
@@ -1408,13 +1541,14 @@ ngrok_share() {
         print_success "APP_URL updated to: $share_url"
         print_info "Your Laravel app is now publicly accessible!"
         
-        # Save PID and share URL for potential cleanup
-        echo "$ngrok_pid" > "$CONFIG_DIR/ngrok_share_pid"
-        echo "$share_url" > "$CONFIG_DIR/ngrok_share_url"
+        # Save share type, PID and share URL for potential cleanup
+        echo "ngrok" > "$CONFIG_DIR/share_type"
+        echo "$ngrok_pid" > "$CONFIG_DIR/share_pid"
+        echo "$share_url" > "$CONFIG_DIR/share_url"
         
         print_info "To stop ngrok later, run: kill $ngrok_pid"
         print_info "Or use: lpdev share-stop"
-        print_info "View ngrok dashboard: http://localhost:4040"
+        print_info "View ngrok dashboard:" "http://localhost:4040"
         
         # Call plugin hook for ngrok share
         call_plugin_hook "on_ngrok_share" "$share_url" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
@@ -1429,93 +1563,113 @@ ngrok_share() {
         
         print_info "ngrok is still running (PID: $ngrok_pid)"
         print_info "You can monitor it manually or kill it with: kill $ngrok_pid"
-        print_info "Try accessing ngrok dashboard: http://localhost:4040"
+        print_info "Try accessing ngrok dashboard:" "http://localhost:4040"
         
         # Save PID anyway
-        echo "$ngrok_pid" > "$CONFIG_DIR/ngrok_share_pid"
+        echo "ngrok" > "$CONFIG_DIR/share_type"
+        echo "$ngrok_pid" > "$CONFIG_DIR/share_pid"
     fi
     
     # Clean up temp file
     rm -f "$temp_file"
 }
 
-ngrok_share_stop() {
+share_stop() {
     eval $(get_current_project) || return 1
     
     call_plugin_hook "before_ngrok_share_stop" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
     
-    print_info "Stopping ngrok tunnel for $LPDEV_PROJECT..."
+    # Determine share type
+    share_type="ngrok"  # default
+    if [ -f "$CONFIG_DIR/share_type" ]; then
+        share_type=$(cat "$CONFIG_DIR/share_type")
+    fi
+    
+    print_info "Stopping $share_type share for $LPDEV_PROJECT..."
     
     # Check if PID file exists
-    pid_file="$CONFIG_DIR/ngrok_share_pid"
+    pid_file="$CONFIG_DIR/share_pid"
+    
+    # Handle legacy file names
+    if [ ! -f "$pid_file" ] && [ -f "$CONFIG_DIR/ngrok_share_pid" ]; then
+        pid_file="$CONFIG_DIR/ngrok_share_pid"
+    fi
     
     if [ ! -f "$pid_file" ]; then
-        print_warning "No ngrok PID file found"
-        print_info "Attempting to find and kill ngrok processes..."
+        print_warning "No share PID file found"
         
-        # Try to kill any ngrok processes
-        if pgrep -f "ngrok http" > /dev/null; then
-            pkill -f "ngrok http"
-            print_success "Killed ngrok processes"
-            
-            # Try to restore original URL if backup exists
-            original_url_file="$CONFIG_DIR/ngrok_share_original_url"
-            if [ -f "$original_url_file" ]; then
-                original_url=$(cat "$original_url_file")
-                if [ -n "$original_url" ]; then
-                    print_info "Restoring original APP_URL: $original_url"
-                    
-                    # Restore APP_URL in app .env
-                    set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$original_url"
-                    print_success "APP_URL restored to: $original_url"
-                    
-                    # Clean up backup files
-                    rm -f "$original_url_file"
-                    rm -f "$CONFIG_DIR/ngrok_share_url"
-                fi
-            fi
+        if [ "$share_type" = "valet" ]; then
+            print_info "Attempting to stop Valet share..."
+            pkill -f "valet share" 2>/dev/null
+            print_success "Stopped any running Valet share processes"
         else
-            print_info "No ngrok processes found"
+            print_info "Attempting to find and kill ngrok processes..."
+            if pgrep -f "ngrok http" > /dev/null; then
+                pkill -f "ngrok http"
+                print_success "Killed ngrok processes"
+            else
+                print_info "No ngrok processes found"
+            fi
         fi
+        
+        # Try to restore original URL if backup exists
+        original_url_file="$CONFIG_DIR/share_original_url"
+        if [ ! -f "$original_url_file" ] && [ -f "$CONFIG_DIR/ngrok_share_original_url" ]; then
+            original_url_file="$CONFIG_DIR/ngrok_share_original_url"
+        fi
+        
+        if [ -f "$original_url_file" ]; then
+            original_url=$(cat "$original_url_file")
+            if [ -n "$original_url" ]; then
+                print_info "Restoring original APP_URL: $original_url"
+                set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$original_url"
+                print_success "APP_URL restored to: $original_url"
+                rm -f "$original_url_file"
+                rm -f "$CONFIG_DIR/share_url" "$CONFIG_DIR/ngrok_share_url" 2>/dev/null
+            fi
+        fi
+        
+        # Clean up share type file
+        rm -f "$CONFIG_DIR/share_type"
         return
     fi
     
-    ngrok_pid=$(cat "$pid_file")
+    share_pid=$(cat "$pid_file")
     
-    if [ -n "$ngrok_pid" ]; then
-        if kill -0 "$ngrok_pid" 2>/dev/null; then
-            print_info "Stopping ngrok process (PID: $ngrok_pid)..."
-            kill "$ngrok_pid" 2>/dev/null
+    if [ -n "$share_pid" ]; then
+        if kill -0 "$share_pid" 2>/dev/null; then
+            print_info "Stopping $share_type process (PID: $share_pid)..."
+            kill "$share_pid" 2>/dev/null
             
             # Wait a moment and check if it's really dead
             sleep 1
-            if kill -0 "$ngrok_pid" 2>/dev/null; then
+            if kill -0 "$share_pid" 2>/dev/null; then
                 print_warning "Process still running, forcing kill..."
-                kill -9 "$ngrok_pid" 2>/dev/null
+                kill -9 "$share_pid" 2>/dev/null
             fi
             
-            print_success "ngrok tunnel stopped"
+            print_success "$share_type share stopped"
         else
-            print_info "ngrok process (PID: $ngrok_pid) was already stopped"
+            print_info "$share_type process (PID: $share_pid) was already stopped"
         fi
         
         # Remove PID file
         rm -f "$pid_file"
         
         # Restore original APP_URL if we have a backup
-        original_url_file="$CONFIG_DIR/ngrok_share_original_url"
+        original_url_file="$CONFIG_DIR/share_original_url"
+        if [ ! -f "$original_url_file" ] && [ -f "$CONFIG_DIR/ngrok_share_original_url" ]; then
+            original_url_file="$CONFIG_DIR/ngrok_share_original_url"
+        fi
+        
         if [ -f "$original_url_file" ]; then
             original_url=$(cat "$original_url_file")
             if [ -n "$original_url" ]; then
                 print_info "Restoring original APP_URL: $original_url"
-                
-                # Restore APP_URL in app .env
                 set_env_var "$LPDEV_APP_PATH/.env" "APP_URL" "$original_url"
                 print_success "APP_URL restored to: $original_url"
-                
-                # Clean up backup files
                 rm -f "$original_url_file"
-                rm -f "$CONFIG_DIR/ngrok_share_url"
+                rm -f "$CONFIG_DIR/share_url" "$CONFIG_DIR/ngrok_share_url" 2>/dev/null
             fi
         else
             print_warning "No original APP_URL backup found"
@@ -1525,6 +1679,9 @@ ngrok_share_stop() {
         print_error "Invalid PID in file"
         rm -f "$pid_file"
     fi
+    
+    # Clean up share type file
+    rm -f "$CONFIG_DIR/share_type"
     
     call_plugin_hook "after_ngrok_share_stop" "$LPDEV_APP_PATH" "$LPDEV_PACKAGE_PATH"
 }
@@ -1541,9 +1698,12 @@ show_status() {
     fi
     
     eval $(get_current_project) || return 1
+
+    local appUrl=$(getAppUrl)
     
     echo -e "${BOLD}Current Project:${NC} ${GREEN}$LPDEV_PROJECT${NC}"
     echo -e "${BOLD}App Path:${NC} $LPDEV_APP_PATH"
+    echo -e "${BOLD}App URL:${NC} ${CYAN}$appUrl${NC}"
     echo -e "${BOLD}Package Path:${NC} $LPDEV_PACKAGE_PATH"
     echo -e "${BOLD}Package Vendor:${NC} $LPDEV_PACKAGE_VENDOR"
     
@@ -1791,8 +1951,8 @@ case "${1:-help}" in
     env) shift; env_set "$@" ;;
     app) shift; exec_in_app "$@" ;;
     pkg) shift; exec_in_package "$@" ;;
-    share) ngrok_share ;;
-    share-stop) ngrok_share_stop ;;
+    share) share ;;
+    share-stop) share_stop ;;
     logs|log) 
         eval $(get_current_project) || exit 1
         tail -f "$LPDEV_APP_PATH/storage/logs/laravel.log" 

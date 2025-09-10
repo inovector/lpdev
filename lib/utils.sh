@@ -73,6 +73,16 @@ set_env_var() {
     fi
 }
 
+get_env_var_value() {
+    local env_file=$1
+    local env_key=$2
+    
+    if [ -f "$env_file" ]; then
+        local value=$(grep "^$env_key=" "$env_file" | cut -d'=' -f2- | tr -d '"')
+        echo "$value"
+    fi
+}
+
 get_package_name() {
     local package_path="$1"
     
@@ -89,4 +99,8 @@ try:
 except:
     pass
 EOF
+}
+
+getAppUrl() {
+    get_env_var_value "$LPDEV_APP_PATH/.env" "APP_URL"
 }
